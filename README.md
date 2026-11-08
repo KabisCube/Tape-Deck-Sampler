@@ -1,4 +1,7 @@
-![Tape Deck Sampler Preview](docs/preview1.png) ![Tape Deck Sampler Preview](docs/preview2.png)
+<p align="center">
+  <img src="docs/preview1.png" alt="Tape Deck Sampler front" width="45%">
+  <img src="docs/preview2.png" alt="Tape Deck Sampler back" width="45%">
+</p>
 
 # Tape Deck Sampler
 
