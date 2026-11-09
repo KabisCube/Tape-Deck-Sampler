@@ -355,10 +355,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
         val elapsed = now - batteryTickAt
         batteryTickAt = now
         if (batteries.drain(elapsed)) powerLost()
-        if (batteries.useBatteries) {
-            if (now - batterySavedAt >= BATTERY_SAVE_MS) { batterySavedAt = now; batteries.save() }
-            if (ready) instrument.invalidate()
+        if (now - batterySavedAt >= BATTERY_SAVE_MS) {
+            batterySavedAt = now
+            if (batteries.useBatteries) batteries.save()
+            saveStats()
         }
+        if (batteries.useBatteries && ready) instrument.invalidate()
     }
 
     private fun powerLost() {
@@ -683,19 +685,22 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     private fun saveStats() {
-        settings.edit().putLong("statMillis", statMillis).putLong("statPads", statPads).putLong("statJams", statJams).putFloat("statWheelTurns", statWheelTurns.toFloat()).apply()
+        settings.edit().putLong("statMillis", usedMillis()).putLong("statPads", statPads).putLong("statJams", statJams).putFloat("statWheelTurns", statWheelTurns.toFloat()).apply()
     }
 
     fun wheelTurned(radians: Double) { statWheelTurns += abs(radians) / (2 * Math.PI) }
 
+    private fun usedMillis() = statMillis + if (foreground) SystemClock.uptimeMillis() - resumedAt else 0
+
     fun stats(): Array<Array<String>> {
-        val millis = statMillis + if (foreground) SystemClock.uptimeMillis() - resumedAt else 0
+        val millis = usedMillis()
         val secrets = secretUnlocked.count { it }
         return arrayOf(
             arrayOf("HOURS USED", String.format(Locale.US, "%.1f h", millis / 3_600_000.0)),
             arrayOf("PADS PRESSED", String.format(Locale.US, "%,d", statPads)),
             arrayOf("WHEEL ROTATIONS", String.format(Locale.US, "%,.1f", statWheelTurns)),
             arrayOf("JAMS", String.format(Locale.US, "%,d", statJams)),
+            arrayOf("BATTERIES USED", String.format(Locale.US, "%,d", batteries.used)),
             arrayOf("SECRETS FOUND", "$secrets / $SECRETS"))
     }
 

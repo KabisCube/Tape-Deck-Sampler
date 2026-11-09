@@ -17,6 +17,7 @@ class BatteryBay(private val settings: SharedPreferences) {
     @JvmField var found = false
     @JvmField var useBatteries = true
     @JvmField var switches = ALL_SWITCHES
+    @JvmField var used = 0L
     private var replaceBrand = -1
 
     init {
@@ -32,6 +33,7 @@ class BatteryBay(private val settings: SharedPreferences) {
         useBatteries = !settings.getBoolean("noBatteries", false)
         switches = settings.getInt("caseSwitches", ALL_SWITCHES) and ALL_SWITCHES
         replaceBrand = settings.getInt("batteryReplaceBrand", -1)
+        used = settings.getLong("batteriesUsed", 0)
     }
 
     fun full() = installed.all { it }
@@ -55,7 +57,7 @@ class BatteryBay(private val settings: SharedPreferences) {
         if (useBatteries && charge[slot] <= SWAP_LEVEL) {
             leavingBrand[slot] = brand[slot]
             if (replaceBrand < 0 || brand.all { it == replaceBrand }) replaceBrand = freshBrand()
-            brand[slot] = replaceBrand; charge[slot] = 1f; fresh[slot] = true
+            brand[slot] = replaceBrand; charge[slot] = 1f; fresh[slot] = true; used++
         } else { leavingBrand[slot] = -1; fresh[slot] = false }
         save()
     }
@@ -81,7 +83,7 @@ class BatteryBay(private val settings: SharedPreferences) {
         for (i in 0 until SLOTS) if (installed[i]) mask = mask or (1 shl i)
         val editor = settings.edit().putInt("batteryInstalled", mask).putString("batteryBrands", brand.joinToString(","))
             .putBoolean("batteryLidOpen", lidOpen).putBoolean("batteryFound", found).putBoolean("noBatteries", !useBatteries)
-            .putInt("caseSwitches", switches).putInt("batteryReplaceBrand", replaceBrand)
+            .putInt("caseSwitches", switches).putInt("batteryReplaceBrand", replaceBrand).putLong("batteriesUsed", used)
         for (i in 0 until SLOTS) editor.putFloat("batteryCharge$i", charge[i])
         editor.apply()
     }
