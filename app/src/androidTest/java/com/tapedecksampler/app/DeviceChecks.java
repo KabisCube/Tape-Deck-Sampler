@@ -534,13 +534,13 @@ public final class DeviceChecks extends Instrumentation {
             app.confirm();
             check(app.mode == MainActivity.Mode.FX_ADD && !Arrays.asList(app.addItems()).contains("Reset track effects"), "Add effect lists only effects on a track");
             addEffect(Sequencer.Effects.REVERB); addEffect(Sequencer.Effects.DELAY);
-            addGroup(Sequencer.Effects.WET);
-            check(app.mode == MainActivity.Mode.FX_VALUE && app.effectParameter == 11, "Adding a one-value effect opens that value");
+            addGroup(Sequencer.Effects.CHANCE);
+            check(app.mode == MainActivity.Mode.FX_VALUE && app.effectParameter == MainActivity.FX_CHANCE, "Adding a one-value effect opens that value");
             app.wheel(-5); app.cancel();
-            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.WET && app.sequencer.tracks[0].wetMix == 100, "Backing out keeps the effect and selects it");
+            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.CHANCE && app.sequencer.tracks[0].chance == 50, "Backing out keeps the effect and selects it");
             app.wheelSide(-1);
-            addGroup(Sequencer.Effects.WET); app.wheel(-5); app.confirm();
-            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.WET && app.sequencer.tracks[0].wetMix == 95, "Applying returns with the effect selected");
+            addGroup(Sequencer.Effects.CHANCE); app.wheel(-5); app.confirm();
+            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.CHANCE && app.sequencer.tracks[0].chance == 45, "Applying returns with the effect selected");
             app.wheelSide(-1);
             addGroup(Sequencer.Effects.ENVELOPE);
             check(app.mode == MainActivity.Mode.EFFECTS && app.effectGroup == Sequencer.Effects.ENVELOPE && app.selection == 0, "Adding a multi-value effect opens its value list");

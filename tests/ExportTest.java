@@ -47,7 +47,7 @@ public final class ExportTest {
             check(later.passesForAllPads() == 4, "Other enabled pages count toward the length");
             Sequencer tail = new Sequencer(tape);
             tail.tracks[0].end = signal.length; tail.tracks[0].steps = 1 << 15;
-            tail.tracks[0].delayTime = 500; tail.tracks[0].delayMix = 50; tail.tracks[0].delayFeedback = 0;
+            tail.tracks[0].delayBeat = 8; tail.tracks[0].delayMix = 100; tail.tracks[0].delayEchoes = 1;
             WavExporter.export(output, tail); wav = read(output);
             check(wav.getInt(40) > 96000 * 2 && wav.getShort(44 + (90000 + 24000 + 100) * 2) == 4000, "WAV includes delay tails past the last page");
             check(wav.getInt(40) < 120000 * 2, "WAV trims silence after the effects tail");

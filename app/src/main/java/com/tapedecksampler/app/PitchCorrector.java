@@ -4,9 +4,9 @@ public final class PitchCorrector {
     public static final String[] KEYS = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     public static final String[] SCALES = {"Chromatic", "Major", "Minor", "Major pentatonic", "Minor pentatonic"};
     private static final int[][] NOTES = {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, {0, 2, 4, 5, 7, 9, 11}, {0, 2, 3, 5, 7, 8, 10}, {0, 2, 4, 7, 9}, {0, 3, 5, 7, 10}};
-    private static final int HOP = 960, WINDOW = 1024, MIN_LAG = 10, MAX_LAG = 184, RING = 4096;
+    private static final int HOP = 480, WINDOW = 1024, MIN_LAG = 10, MAX_LAG = 184, RING = 4096;
     private static final int DECIMATION = 4, SEMITONES = 12, A4_MIDI = 69;
-    private static final double A4_HZ = 440, MIN_POWER = 10000, MIN_CORRECTION = .01, MARK_SEARCH = .15, PERIOD_THRESHOLD = .15, MIN_RATIO = .5, MIN_WEIGHT = .0001;
+    private static final double A4_HZ = 440, MIN_POWER = 10000, MIN_CORRECTION = .01, MARK_SEARCH = .15, PERIOD_THRESHOLD = .15, MIN_RATIO = .5, MIN_WEIGHT = .0001, HYSTERESIS = .15, OCTAVE_JUMP = 1.6;
 
     private PitchCorrector() {}
 
@@ -15,9 +15,6 @@ public final class PitchCorrector {
         int count = (source.length + HOP - 1) / HOP;
         double[] periods = new double[count], ratios = new double[count];
         double[] signal = new double[WINDOW], difference = new double[MAX_LAG + 1];
-        double correction = 0;
-        boolean changed = false;
-        double follow = controls.autoRetune == 0 ? 1 : 1 - Math.exp(-HOP * 1000.0 / (Tape.RATE * controls.autoRetune));
         for (int frame = 0; frame < count; frame++) {
             if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Pitch correction cancelled");
             int start = Math.max(0, Math.min(source.length - WINDOW * DECIMATION, frame * HOP - WINDOW * DECIMATION / 2));
@@ -27,12 +24,22 @@ public final class PitchCorrector {
                 signal[i] = offset + 3 < source.length ? (source[offset] + source[offset + 1] + source[offset + 2] + source[offset + 3]) / (double) DECIMATION : 0;
                 power += signal[i] * signal[i];
             }
-            double period = power / WINDOW < MIN_POWER ? 0 : detect(signal, difference);
-            if (period == 0) { correction = 0; ratios[frame] = 1; continue; }
+            periods[frame] = power / WINDOW < MIN_POWER ? 0 : detect(signal, difference);
+        }
+        smooth(periods);
+        double follow = controls.autoRetune == 0 ? 1 : 1 - Math.exp(-HOP * 1000.0 / (Tape.RATE * controls.autoRetune));
+        double output = 0;
+        int note = Integer.MIN_VALUE;
+        boolean changed = false;
+        for (int frame = 0; frame < count; frame++) {
+            double period = periods[frame];
+            if (period == 0) { note = Integer.MIN_VALUE; ratios[frame] = 1; continue; }
             double midi = A4_MIDI + SEMITONES * Math.log(Tape.RATE / period / A4_HZ) / Math.log(2);
-            double desired = (nearestNote(midi, controls.autoKey, controls.autoScale) - midi) * controls.autoStrength / 100.0;
-            correction += (desired - correction) * follow;
-            periods[frame] = period;
+            int nearest = nearestNote(midi, controls.autoKey, controls.autoScale);
+            if (note == Integer.MIN_VALUE) { note = nearest; output = controls.autoRetune == 0 ? nearest : midi; }
+            else if (nearest != note && Math.abs(midi - nearest) + HYSTERESIS < Math.abs(midi - note)) note = nearest;
+            output += (note - output) * follow;
+            double correction = (output - midi) * controls.autoStrength / 100.0;
             ratios[frame] = Math.pow(2, correction / SEMITONES);
             changed |= Math.abs(correction) >= MIN_CORRECTION;
         }
@@ -110,6 +117,19 @@ public final class PitchCorrector {
             return refined * DECIMATION;
         }
         return 0;
+    }
+
+    private static void smooth(double[] periods) {
+        for (int i = 1; i + 1 < periods.length; i++) {
+            if (periods[i] == 0 && periods[i - 1] > 0 && periods[i + 1] > 0) periods[i] = (periods[i - 1] + periods[i + 1]) / 2;
+        }
+        double[] copy = periods.clone();
+        for (int i = 1; i + 1 < periods.length; i++) {
+            double a = copy[i - 1], b = copy[i], c = copy[i + 1];
+            if (a == 0 || b == 0 || c == 0) continue;
+            double median = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+            if (b / median > OCTAVE_JUMP || median / b > OCTAVE_JUMP) periods[i] = median;
+        }
     }
 
     private static double interpolate(double[] values, double position) {

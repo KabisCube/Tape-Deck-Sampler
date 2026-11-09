@@ -1,7 +1,7 @@
 package com.tapedecksampler.app;
 
 public final class SampleProcessor {
-    public static final int MIN_SPEED = 25, MAX_SPEED = 400, MIN_PITCH = -24, MAX_PITCH = 24;
+    public static final int MIN_SPEED = 25, MAX_SPEED = 400, MIN_PITCH = -48, MAX_PITCH = 48;
     private static final double SEMITONES = 12;
     private static final int CANCEL_CHECK_MASK = 4095, MAX_WINDOW = 2048, MAX_SEARCH = 512;
     private static final int CORRELATION_POINTS = 128, COARSE_STEPS = 16;
@@ -10,7 +10,7 @@ public final class SampleProcessor {
     public static short[] process(short[] source, int speed, int semitones) {
         if (speed < MIN_SPEED || speed > MAX_SPEED || semitones < MIN_PITCH || semitones > MAX_PITCH) throw new IllegalArgumentException("Invalid sample transform");
         if (source.length == 0 || (speed == 100 && semitones == 0)) return source;
-        double pitch = Math.pow(2, semitones / SEMITONES);
+        double pitch = Math.pow(2, semitones / 2.0 / SEMITONES);
         short[] shifted = semitones == 0 ? source : resample(source, pitch);
         return stretch(shifted, Math.max(1, (int) Math.round(source.length * 100.0 / speed)));
     }

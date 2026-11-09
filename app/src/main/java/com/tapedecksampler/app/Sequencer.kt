@@ -22,10 +22,9 @@ class Sequencer(private val tape: Tape) {
         @JvmField var distortionMix = 100
         @JvmField var highPass = 0
         @JvmField var lowPass = 0
-        @JvmField var delayTime = DEFAULT_DELAY_MS
-        @JvmField var delayFeedback = DEFAULT_DELAY_FEEDBACK
+        @JvmField var delayBeat = DEFAULT_DELAY_BEAT
+        @JvmField var delayEchoes = DEFAULT_DELAY_ECHOES
         @JvmField var delayMix = 0
-        @JvmField var wetMix = 100
         @JvmField var attack = 0
         @JvmField var decay = 0
         @JvmField var sustain = 100
@@ -57,7 +56,7 @@ class Sequencer(private val tape: Tape) {
                 AUTOTUNE -> autoKey == other.autoKey && autoScale == other.autoScale && autoStrength == other.autoStrength && autoRetune == other.autoRetune && autoMix == other.autoMix
                 HIGH_PASS -> highPass == other.highPass
                 LOW_PASS -> lowPass == other.lowPass
-                DELAY -> delayTime == other.delayTime && delayFeedback == other.delayFeedback && delayMix == other.delayMix
+                DELAY -> delayBeat == other.delayBeat && delayEchoes == other.delayEchoes && delayMix == other.delayMix
                 DISTORTION -> distortion == other.distortion && drive == other.drive && distortionMix == other.distortionMix
                 ENVELOPE -> attack == other.attack && decay == other.decay && sustain == other.sustain && release == other.release
                 REVERB -> reverb == other.reverb
@@ -68,7 +67,6 @@ class Sequencer(private val tape: Tape) {
                 WOBBLE -> wobbleMode == other.wobbleMode && wobbleRate == other.wobbleRate && wobbleDepth == other.wobbleDepth
                 SHIFT -> trimStart == other.trimStart && trimEnd == other.trimEnd
                 VOLUME -> gain == other.gain
-                WET -> wetMix == other.wetMix
                 PITCH -> pitch == other.pitch
                 else -> true
             }
@@ -181,7 +179,6 @@ class Sequencer(private val tape: Tape) {
                 WOBBLE -> wobbleDepth > 0
                 SHIFT -> trimStart != 0 || trimEnd != 0
                 VOLUME -> gain != neutralGain
-                WET -> wetMix != 100
                 else -> false
             }
         }
@@ -194,8 +191,8 @@ class Sequencer(private val tape: Tape) {
                     AUTOTUNE -> if (autoStrength == 0) autoStrength = ON_AUTOTUNE_STRENGTH
                     HIGH_PASS -> if (highPass == 0) highPass = ON_HIGH_PASS_HZ
                     LOW_PASS -> if (lowPass == 0) lowPass = ON_LOW_PASS_HZ
-                    DELAY -> if (delayMix == 0) delayMix = ON_DELAY_MIX
                     DISTORTION -> if (distortion == 0) distortion = ON_DISTORTION_TYPE
+                    DELAY -> { if (delayMix == 0) delayMix = ON_DELAY_MIX; delayBeat = DEFAULT_DELAY_BEAT }
                     ENVELOPE -> if (attack == 0 && decay == 0 && sustain == 100 && release == 0) release = ON_RELEASE_MS
                     REVERB -> if (reverb == 0) reverb = ON_REVERB
                     CHANCE -> if (chance == 100) chance = ON_CHANCE
@@ -217,7 +214,7 @@ class Sequencer(private val tape: Tape) {
                 AUTOTUNE -> { autoKey = 0; autoScale = 0; autoStrength = 0; autoRetune = DEFAULT_RETUNE_MS; autoMix = 100; prepared = null }
                 HIGH_PASS -> highPass = 0
                 LOW_PASS -> lowPass = 0
-                DELAY -> { delayTime = DEFAULT_DELAY_MS; delayFeedback = DEFAULT_DELAY_FEEDBACK; delayMix = 0 }
+                DELAY -> { delayBeat = DEFAULT_DELAY_BEAT; delayEchoes = DEFAULT_DELAY_ECHOES; delayMix = 0 }
                 DISTORTION -> { distortion = 0; drive = DEFAULT_DRIVE; distortionMix = 100 }
                 ENVELOPE -> { attack = 0; decay = 0; release = 0; sustain = 100 }
                 REVERB -> reverb = 0
@@ -228,7 +225,6 @@ class Sequencer(private val tape: Tape) {
                 WOBBLE -> { wobbleMode = 0; wobbleRate = DEFAULT_WOBBLE_RATE; wobbleDepth = 0 }
                 SHIFT -> { trimStart = 0; trimEnd = 0; prepared = null }
                 VOLUME -> gain = neutralGain
-                WET -> wetMix = 100
                 PITCH -> { pitch = 0; prepared = null }
                 else -> throw IllegalArgumentException("Unknown effect group")
             }
@@ -247,7 +243,7 @@ class Sequencer(private val tape: Tape) {
                 }
                 HIGH_PASS -> highPass = source.highPass
                 LOW_PASS -> lowPass = source.lowPass
-                DELAY -> { delayTime = source.delayTime; delayFeedback = source.delayFeedback; delayMix = source.delayMix }
+                DELAY -> { delayBeat = source.delayBeat; delayEchoes = source.delayEchoes; delayMix = source.delayMix }
                 DISTORTION -> { distortion = source.distortion; drive = source.drive; distortionMix = source.distortionMix }
                 ENVELOPE -> { attack = source.attack; decay = source.decay; sustain = source.sustain; release = source.release }
                 REVERB -> reverb = source.reverb
@@ -258,7 +254,6 @@ class Sequencer(private val tape: Tape) {
                 WOBBLE -> { wobbleMode = source.wobbleMode; wobbleRate = source.wobbleRate; wobbleDepth = source.wobbleDepth }
                 SHIFT -> { trimStart = source.trimStart; trimEnd = source.trimEnd; prepared = null }
                 VOLUME -> gain = source.gain
-                WET -> wetMix = source.wetMix
                 PITCH -> { pitch = source.pitch; prepared = null }
                 else -> throw IllegalArgumentException("Unknown effect group")
             }
@@ -272,8 +267,8 @@ class Sequencer(private val tape: Tape) {
         fun copyFrom(source: Effects) {
             gain = source.gain; mute = source.mute; speed = source.speed; pitch = source.pitch
             reverb = source.reverb; distortion = source.distortion; drive = source.drive; distortionMix = source.distortionMix; prepared = source.prepared
-            highPass = source.highPass; lowPass = source.lowPass; delayTime = source.delayTime
-            delayFeedback = source.delayFeedback; delayMix = source.delayMix; wetMix = source.wetMix
+            highPass = source.highPass; lowPass = source.lowPass; delayBeat = source.delayBeat
+            delayEchoes = source.delayEchoes; delayMix = source.delayMix
             attack = source.attack; decay = source.decay; sustain = source.sustain; release = source.release
             swingOverride = source.swingOverride; nudge = source.nudge
             autoKey = source.autoKey; autoScale = source.autoScale; autoStrength = source.autoStrength
@@ -296,25 +291,24 @@ class Sequencer(private val tape: Tape) {
             const val REVERB = 6
             const val SWING = 7
             const val VOLUME = 8
-            const val WET = 9
+            const val SHIFT = 9
             const val PITCH = 10
             const val LOW_PASS = 11
             const val NUDGE = 12
             const val CHANCE = 13
             const val EVERY = 14
             const val WOBBLE = 15
-            const val SHIFT = 16
             const val WOBBLE_VOLUME = 0
             const val WOBBLE_PITCH = 1
             const val WOBBLE_SPEED = 2
-            const val GROUPS = 17
+            const val GROUPS = 16
             const val CHAIN_LENGTH = 5
             const val CHAIN_BIT = 1 shl 30
             const val DEFAULT_GAIN = 0.8f
             const val DEFAULT_DRIVE = 40
-            const val DEFAULT_DELAY_MS = 250
-            const val DEFAULT_DELAY_FEEDBACK = 35
-            const val DEFAULT_RETUNE_MS = 40
+            const val DEFAULT_DELAY_BEAT = 8
+            const val DEFAULT_DELAY_ECHOES = 3
+            const val DEFAULT_RETUNE_MS = 0
             const val DEFAULT_WOBBLE_RATE = 50
             private const val ON_AUTOTUNE_STRENGTH = 100
             private const val ON_HIGH_PASS_HZ = 200
@@ -328,7 +322,7 @@ class Sequencer(private val tape: Tape) {
             private const val ON_WOBBLE_DEPTH = 50
             private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, DISTORTION, REVERB, DELAY)
             private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, AUTOTUNE, SWING, NUDGE, WOBBLE, ENVELOPE)
-            private val OUTPUT_STAGE = intArrayOf(WET, VOLUME)
+            private val OUTPUT_STAGE = intArrayOf(VOLUME)
 
             @JvmStatic fun hasPowerSwitch(group: Int): Boolean = group in SAMPLE until GROUPS
 
@@ -924,14 +918,14 @@ class Sequencer(private val tape: Tape) {
                 var sum = 0f
                 for (track in tracks.indices) {
                     val controls = tracks[track]
-                    val value = if (processing[track]) effects[track].process(mix[track], controls) else mix[track]
+                    val value = if (processing[track]) effects[track].process(mix[track], controls, bpm) else mix[track]
                     if (!controls.mute) sum += value * controls.gain
                 }
                 for (index in activeBuses.indices) {
                     val bus = activeBuses[index]
                     val track = tracks[bus.track]
                     val controls = bus.controls
-                    val value = if (bus.processing) bus.effects.process(bus.mix, controls) else bus.mix
+                    val value = if (bus.processing) bus.effects.process(bus.mix, controls, bpm) else bus.mix
                     bus.silentFrames = if (bus.mix == 0f && abs(value) < SILENCE_LEVEL) bus.silentFrames + 1 else 0
                     if (track.mute) continue
                     if (bus.step < 0) sum += value * controls.gain

@@ -3,16 +3,17 @@ package com.tapedecksampler.app;
 import java.util.Arrays;
 
 public final class TrackEffects {
-    public static final String[] DISTORTIONS = {"Off", "Soft clip", "Hard clip", "Foldback", "Bitcrush"};
+    public static final String[] DISTORTIONS = {"Soft clip", "Hard clip", "Foldback", "Bitcrush"};
+    public static final String[] DELAY_BEATS = {"1/32", "1/16T", "1/16", "1/8T", "1/16D", "1/8", "1/4T", "1/8D", "1/4", "1/2T", "1/4D", "1/2", "1/2D", "1 bar"};
+    private static final int[] DELAY_24THS = {3, 4, 6, 8, 9, 12, 16, 18, 24, 32, 36, 48, 72, 96};
+    public static final int MAX_ECHOES = 8;
+    private static final int MAX_DELAY_BUFFER = Tape.RATE * 16;
     private static final int SOFT_CLIP = 1, HARD_CLIP = 2, FOLDBACK = 3, BITCRUSH = 4;
     private static final int[] COMB_LENGTHS = {1499, 1601, 1747, 1867};
     private static final int[] ALLPASS_LENGTHS = {241, 83};
     private static final float COMB_DAMPING = 0.7f, COMB_INPUT = 0.22f, COMB_FEEDBACK = 0.79f;
     private static final float ALLPASS_GAIN = 0.5f;
     private static final float REVERB_DRY_DUCK = 0.25f, REVERB_WET_GAIN = 0.6f;
-    private static final int FRAMES_PER_MS = Tape.RATE / 1000;
-    private static final int MAX_DELAY_FRAMES = Tape.RATE * 2;
-    private static final int MAX_DELAY_FEEDBACK = 90;
     private static final int MAX_FILTER_HZ = 20000;
     private static final float DECLICK_FRAMES = 48f;
     private static final int LEVEL_SMOOTHING_FRAMES = 2400;
@@ -47,11 +48,20 @@ public final class TrackEffects {
                 || controls.powered(Sequencer.Effects.DISTORTION) && controls.distortion != 0 && controls.distortionMix > 0
                 || controls.powered(Sequencer.Effects.REVERB) && controls.reverb > 0
                 || controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0) return true;
-        process(0, controls);
+        process(0, controls, Sequencer.DEFAULT_BPM);
         return false;
     }
 
-    public float process(float input, Sequencer.Effects controls) {
+    public static int delayFrames(int beat, int bpm) {
+        int index = Math.max(0, Math.min(DELAY_24THS.length - 1, beat));
+        return Math.max(1, (int) Math.round(Tape.RATE * 60.0 / Math.max(1, bpm) * DELAY_24THS[index] / 24.0));
+    }
+
+    public static float echoGain(int echo, int echoes) {
+        return (echoes + 1 - echo) / (float) (echoes + 1);
+    }
+
+    public float process(float input, Sequencer.Effects controls, int bpm) {
         float value = input;
         for (int group : controls.chain) {
             switch (group) {
@@ -61,12 +71,11 @@ public final class TrackEffects {
                     value = distortion(value, controls.powered(group) ? controls.distortion : 0, controls.drive, controls.distortionMix);
                     break;
                 case Sequencer.Effects.REVERB: value = reverb(value, controls.powered(group) ? controls.reverb : 0); break;
-                case Sequencer.Effects.DELAY: value = delay(value, controls); break;
+                case Sequencer.Effects.DELAY: value = delay(value, controls, bpm); break;
                 default: break;
             }
         }
-        if (controls.wetMix == 100) return value;
-        return input + (value - input) * controls.wetMix / 100f;
+        return value;
     }
 
     private float highPassed(float input, int frequency) {
@@ -89,17 +98,24 @@ public final class TrackEffects {
         return lowState;
     }
 
-    private float delay(float input, Sequencer.Effects controls) {
+    private float delay(float input, Sequencer.Effects controls, int bpm) {
         float value = input;
         if (controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0) {
-            int frames = Math.max(1, Math.min(MAX_DELAY_FRAMES, controls.delayTime * FRAMES_PER_MS));
-            if (delay == null || delay.length <= frames) growDelay(frames + 1);
-            int read = delayPosition - frames;
-            if (read < 0) read += delay.length;
-            float echo = delay[read];
-            delay[delayPosition] = value + echo * Math.max(0, Math.min(MAX_DELAY_FEEDBACK, controls.delayFeedback)) / 100f;
+            int echoes = Math.max(1, Math.min(MAX_ECHOES, controls.delayEchoes));
+            int frames = delayFrames(controls.delayBeat, bpm);
+            int needed = Math.min(MAX_DELAY_BUFFER, frames * echoes + 1);
+            if (delay == null || delay.length < needed) growDelay(needed);
+            delay[delayPosition] = value;
+            float echo = 0;
+            for (int k = 1; k <= echoes; k++) {
+                int age = frames * k;
+                if (age >= delay.length) break;
+                int read = delayPosition - age;
+                if (read < 0) read += delay.length;
+                echo += delay[read] * echoGain(k, echoes);
+            }
             if (++delayPosition == delay.length) delayPosition = 0;
-            value += (echo - value) * controls.delayMix / 100f;
+            value += echo * controls.delayMix / 100f;
             delayActive = true;
         } else if (delayActive) {
             Arrays.fill(delay, 0); delayPosition = 0; delayActive = false;
@@ -185,7 +201,7 @@ public final class TrackEffects {
         return value * (1 - reverberation * REVERB_DRY_DUCK) + reflections * reverberation * REVERB_WET_GAIN;
     }
 
-    private float distort(float sample, int type, int drive) {
+    public static float shape(float sample, int type, int drive) {
         float amount = Math.max(0, Math.min(100, drive)) / 100f;
         switch (type) {
             case SOFT_CLIP: return (float) (Math.tanh(sample * (1 + SOFT_DRIVE_RANGE * amount)) / Math.tanh(1 + SOFT_DRIVE_RANGE * amount));
@@ -195,14 +211,21 @@ public final class TrackEffects {
                 folded -= FOLD_PERIOD * (float) Math.floor(folded / FOLD_PERIOD);
                 return 1 - Math.abs(folded - FOLD_PERIOD / 2);
             case BITCRUSH:
-                if (crushCounter-- <= 0) {
-                    int levels = 1 << (PCM_BITS - Math.round(amount * MAX_CRUSH_BITS));
-                    held = Math.round(Math.max(-1, Math.min(1, sample)) * levels) / (float) levels;
-                    crushCounter = Math.round(amount * MAX_CRUSH_HOLD);
-                }
-                return held;
+                float levels = Math.max(2, 8 - Math.round(amount * 6));
+                return Math.round(sample * levels) / levels;
             default: return sample;
         }
+    }
+
+    private float distort(float sample, int type, int drive) {
+        if (type != BITCRUSH) return shape(sample, type, drive);
+        float amount = Math.max(0, Math.min(100, drive)) / 100f;
+        if (crushCounter-- <= 0) {
+            int levels = 1 << (PCM_BITS - Math.round(amount * MAX_CRUSH_BITS));
+            held = Math.round(Math.max(-1, Math.min(1, sample)) * levels) / (float) levels;
+            crushCounter = Math.round(amount * MAX_CRUSH_HOLD);
+        }
+        return held;
     }
 
     private void resetReverb() {

@@ -34,7 +34,7 @@ object WavExporter {
                     val controls = pattern.padEffects[track][step] ?: base
                     if (controls.mute || controls.gain == 0f) continue
                     longestVoice = maxOf(longestVoice, ceil((base.end - base.start) * 100.0 / controls.speed).toLong())
-                    if (controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0) quietWindow = maxOf(quietWindow, (controls.delayTime + ECHO_TAIL_MS) * (Tape.RATE / 1000))
+                    if (controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0) quietWindow = maxOf(quietWindow, TrackEffects.delayFrames(controls.delayBeat, sequence.bpm()) * controls.delayEchoes + ECHO_TAIL_MS * (Tape.RATE / 1000))
                 }
             }
         }

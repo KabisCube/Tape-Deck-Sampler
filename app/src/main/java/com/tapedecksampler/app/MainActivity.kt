@@ -590,24 +590,31 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private fun readPad(json: JSONObject, target: Sequencer, track: Int, pad: Int) {
         val controls = target.editStep(track, pad)
         readEffects(json, controls)
-        controls.custom = if (json.has("custom")) json.optInt("custom") else controls.differences(target.tracks[track])
+        controls.custom = if (json.has("custom")) groupMask(json, "custom") else controls.differences(target.tracks[track])
+    }
+
+    private fun groupMask(json: JSONObject, key: String): Int {
+        val mask = json.optInt(key, 0)
+        if (json.optInt("fxVersion", 1) >= FX_VERSION) return mask
+        val shift = mask and (1 shl LEGACY_SHIFT_GROUP) != 0
+        val kept = mask and ((1 shl LEGACY_WET_GROUP) or (1 shl LEGACY_SHIFT_GROUP)).inv()
+        return if (shift) kept or (1 shl Sequencer.Effects.SHIFT) else kept
     }
 
     private fun readEffects(json: JSONObject, controls: Sequencer.Effects) {
         controls.gain = json.optDouble("gain", Sequencer.Effects.DEFAULT_GAIN.toDouble()).coerceIn(0.0, 1.0).toFloat()
         controls.mute = json.optBoolean("mute")
         controls.speed = json.optInt("speed", 100).coerceIn(SampleProcessor.MIN_SPEED, SampleProcessor.MAX_SPEED)
-        controls.pitch = json.optInt("pitch", 0).coerceIn(SampleProcessor.MIN_PITCH, SampleProcessor.MAX_PITCH)
+        controls.pitch = (if (json.has("pitchHalf")) json.optInt("pitchHalf", 0) else json.optInt("pitch", 0) * 2).coerceIn(SampleProcessor.MIN_PITCH, SampleProcessor.MAX_PITCH)
         controls.reverb = json.optInt("reverb", 0).coerceIn(0, 100)
-        controls.distortion = json.optInt("distortion", 0).coerceIn(0, TrackEffects.DISTORTIONS.size - 1)
+        controls.distortion = json.optInt("distortion", 0).coerceIn(0, TrackEffects.DISTORTIONS.size)
         controls.drive = json.optInt("drive", Sequencer.Effects.DEFAULT_DRIVE).coerceIn(0, 100)
         controls.distortionMix = json.optInt("distortionMix", 100).coerceIn(0, 100)
         controls.highPass = json.optInt("highPass", 0).coerceIn(0, MAX_FILTER_HZ)
         controls.lowPass = json.optInt("lowPass", 0).coerceIn(0, MAX_FILTER_HZ)
-        controls.delayTime = json.optInt("delayTime", Sequencer.Effects.DEFAULT_DELAY_MS).coerceIn(1, MAX_DELAY_MS)
-        controls.delayFeedback = json.optInt("delayFeedback", Sequencer.Effects.DEFAULT_DELAY_FEEDBACK).coerceIn(0, MAX_DELAY_FEEDBACK)
+        controls.delayBeat = json.optInt("delayBeat", Sequencer.Effects.DEFAULT_DELAY_BEAT).coerceIn(0, TrackEffects.DELAY_BEATS.size - 1)
+        controls.delayEchoes = json.optInt("delayEchoes", Sequencer.Effects.DEFAULT_DELAY_ECHOES).coerceIn(1, TrackEffects.MAX_ECHOES)
         controls.delayMix = json.optInt("delayMix", 0).coerceIn(0, 100)
-        controls.wetMix = json.optInt("wetMix", 100).coerceIn(0, 100)
         controls.attack = json.optInt("attack", 0).coerceIn(0, MAX_ENVELOPE_MS)
         controls.decay = json.optInt("decay", 0).coerceIn(0, MAX_ENVELOPE_MS)
         controls.sustain = json.optInt("sustain", 100).coerceIn(0, 100)
@@ -625,8 +632,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.wobbleMode = json.optInt("wobbleMode", 0).coerceIn(0, WOBBLE_MODES.size - 1)
         controls.wobbleRate = json.optInt("wobbleRate", Sequencer.Effects.DEFAULT_WOBBLE_RATE).coerceIn(MIN_WOBBLE_RATE, MAX_WOBBLE_RATE)
         controls.wobbleDepth = json.optInt("wobbleDepth", 0).coerceIn(0, 100)
-        controls.effectPower = json.optInt("effectPower", 0) and EFFECT_MASK
-        controls.effectPowerSet = json.optInt("effectPowerSet", 0) and EFFECT_MASK
+        controls.effectPower = groupMask(json, "effectPower") and EFFECT_MASK
+        controls.effectPowerSet = groupMask(json, "effectPowerSet") and EFFECT_MASK
         controls.trimStart = json.optInt("trimStart", 0).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
         controls.trimEnd = json.optInt("trimEnd", 0).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
         val chain = json.optJSONArray("chain")
@@ -640,15 +647,15 @@ class MainActivity : Activity(), AudioEngine.Listener {
         for (group in controls.chain) chain.put(group)
         return JSONObject().put("chain", chain).put("chance", controls.chance).put("every", controls.every)
             .put("wobbleMode", controls.wobbleMode).put("wobbleRate", controls.wobbleRate).put("wobbleDepth", controls.wobbleDepth).put("gain", controls.gain.toDouble()).put("mute", controls.mute).put("speed", controls.speed)
-            .put("pitch", controls.pitch).put("reverb", controls.reverb).put("distortion", controls.distortion).put("drive", controls.drive).put("distortionMix", controls.distortionMix)
-            .put("highPass", controls.highPass).put("lowPass", controls.lowPass).put("delayTime", controls.delayTime)
-            .put("delayFeedback", controls.delayFeedback).put("delayMix", controls.delayMix).put("wetMix", controls.wetMix)
+            .put("pitchHalf", controls.pitch).put("reverb", controls.reverb).put("distortion", controls.distortion).put("drive", controls.drive).put("distortionMix", controls.distortionMix)
+            .put("highPass", controls.highPass).put("lowPass", controls.lowPass).put("delayBeat", controls.delayBeat)
+            .put("delayEchoes", controls.delayEchoes).put("delayMix", controls.delayMix)
             .put("attack", controls.attack).put("decay", controls.decay).put("sustain", controls.sustain).put("release", controls.release)
             .put("swingOverride", controls.swingOverride).put("nudge", controls.nudge)
             .put("autoKey", controls.autoKey).put("autoScale", controls.autoScale).put("autoStrength", controls.autoStrength)
             .put("autoRetune", controls.autoRetune).put("autoMix", controls.autoMix)
             .put("effectPower", controls.effectPower).put("effectPowerSet", controls.effectPowerSet)
-            .put("trimStart", controls.trimStart).put("trimEnd", controls.trimEnd).put("custom", controls.custom)
+            .put("trimStart", controls.trimStart).put("trimEnd", controls.trimEnd).put("custom", controls.custom).put("fxVersion", FX_VERSION)
     }
 
     private fun effectOrNull(controls: Sequencer.Effects?): Any = if (controls == null) JSONObject.NULL else effectData(controls)
@@ -1276,10 +1283,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun effectDisplay(parameter: Int, value: Int): String = when {
-        parameter == FX_PITCH -> signed(value) + " st"
-        parameter == FX_DISTORTION -> TrackEffects.DISTORTIONS[value]
+        parameter == FX_PITCH -> halfSteps(value) + " st"
+        parameter == FX_DISTORTION -> TrackEffects.DISTORTIONS[(value - 1).coerceIn(0, TrackEffects.DISTORTIONS.size - 1)]
+        parameter == FX_DELAY_TIME -> Math.round(TrackEffects.delayFrames(value, sequencer.bpm()) * 1000.0 / Tape.RATE).toString() + " ms"
+        parameter == FX_DELAY_FEEDBACK -> if (value == 1) "1 echo" else "$value echoes"
         parameter == FX_HIGH_PASS || parameter == FX_LOW_PASS -> if (value == 0) "Off" else "$value Hz"
-        parameter == FX_DELAY_TIME || parameter == FX_ATTACK || parameter == FX_DECAY || parameter == FX_RELEASE || parameter == FX_AUTO_RETUNE -> "$value ms"
+        parameter == FX_ATTACK || parameter == FX_DECAY || parameter == FX_RELEASE || parameter == FX_AUTO_RETUNE -> "$value ms"
         parameter == FX_AUTO_KEY -> PitchCorrector.KEYS[value]
         parameter == FX_AUTO_SCALE -> PitchCorrector.SCALES[value]
         parameter == FX_AUTO_STRENGTH && value == 0 -> "Off"
@@ -1293,11 +1302,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun effectHint(parameter: Int): String = when (parameter) {
         FX_SPEED -> "${SampleProcessor.MIN_SPEED}-${SampleProcessor.MAX_SPEED}% / PITCH PRESERVED"
-        FX_PITCH -> "${SampleProcessor.MIN_PITCH} TO +${SampleProcessor.MAX_PITCH} SEMITONES / LIVE"
+        FX_PITCH -> "${SampleProcessor.MIN_PITCH / 2} TO +${SampleProcessor.MAX_PITCH / 2} SEMITONES / 0.5 STEPS"
         FX_HIGH_PASS, FX_LOW_PASS -> "OFF / $MIN_FILTER_HZ-$MAX_FILTER_HZ Hz / LIVE"
-        FX_DELAY_TIME -> "1-$MAX_DELAY_MS ms / ENABLE WITH DELAY MIX"
-        FX_DELAY_FEEDBACK -> "0-$MAX_DELAY_FEEDBACK% / REPEATS"
-        FX_WET_MIX -> "0% DRY / 100% EFFECTS"
+        FX_DELAY_TIME -> (if (effectValue == TrackEffects.DELAY_BEATS.size - 1) "1 BAR" else TrackEffects.DELAY_BEATS[effectValue].replace("T", " TRIPLET").replace("D", " DOTTED") + " NOTE") + " AT " + sequencer.bpm() + " BPM"
+        FX_DELAY_FEEDBACK -> "1-${TrackEffects.MAX_ECHOES} REPEATS / FADING OUT"
         FX_ATTACK, FX_DECAY -> "0-$MAX_ENVELOPE_MS ms / LIVE"
         FX_RELEASE -> "FADE AT SAMPLE END / 0-$MAX_ENVELOPE_MS ms"
         FX_AUTO_KEY, FX_AUTO_SCALE -> "MONOPHONIC VOCALS / INSTRUMENTS"
@@ -1325,10 +1333,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
             FX_VOLUME -> Math.round((if (stepTarget >= 0 && sequencer.controls(track, stepTarget) == null) 1f else controls.gain) * 100)
             FX_HIGH_PASS -> controls.highPass
             FX_LOW_PASS -> controls.lowPass
-            FX_DELAY_TIME -> controls.delayTime
-            FX_DELAY_FEEDBACK -> controls.delayFeedback
+            FX_DELAY_TIME -> controls.delayBeat
+            FX_DELAY_FEEDBACK -> controls.delayEchoes
             FX_DELAY_MIX -> controls.delayMix
-            FX_WET_MIX -> controls.wetMix
             FX_ATTACK -> controls.attack
             FX_DECAY -> controls.decay
             FX_SUSTAIN -> controls.sustain
@@ -1376,10 +1383,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_VOLUME -> controls.gain = value / 100f
                 FX_HIGH_PASS -> controls.highPass = value
                 FX_LOW_PASS -> controls.lowPass = value
-                FX_DELAY_TIME -> controls.delayTime = value
-                FX_DELAY_FEEDBACK -> controls.delayFeedback = value
+                FX_DELAY_TIME -> controls.delayBeat = value
+                FX_DELAY_FEEDBACK -> controls.delayEchoes = value
                 FX_DELAY_MIX -> controls.delayMix = value
-                FX_WET_MIX -> controls.wetMix = value
                 FX_ATTACK -> controls.attack = value
                 FX_DECAY -> controls.decay = value
                 FX_SUSTAIN -> controls.sustain = value
@@ -1618,15 +1624,15 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 effectValue = when (effectParameter) {
                     FX_SPEED -> (v + delta).coerceIn(SampleProcessor.MIN_SPEED, SampleProcessor.MAX_SPEED)
                     FX_PITCH -> (v + delta).coerceIn(SampleProcessor.MIN_PITCH, SampleProcessor.MAX_PITCH)
-                    FX_DISTORTION -> (v + delta.toLong()).coerceIn(0L, TrackEffects.DISTORTIONS.size - 1L).toInt()
+                    FX_DISTORTION -> (v + delta.toLong()).coerceIn(1L, TrackEffects.DISTORTIONS.size.toLong()).toInt()
                     FX_HIGH_PASS, FX_LOW_PASS -> {
                         val range = MAX_FILTER_HZ / MIN_FILTER_HZ.toDouble()
                         var position = if (v == 0) 0 else 1 + Math.round(Math.log(v / MIN_FILTER_HZ.toDouble()) / Math.log(range) * FILTER_STEPS).toInt()
                         position = (position + delta).coerceIn(0, FILTER_STEPS + 1)
                         if (position == 0) 0 else Math.round(MIN_FILTER_HZ * Math.pow(range, (position - 1) / FILTER_STEPS.toDouble())).toInt()
                     }
-                    FX_DELAY_TIME -> (v + delta * FAST_STEP).coerceIn(1, MAX_DELAY_MS)
-                    FX_DELAY_FEEDBACK -> (v + delta).coerceIn(0, MAX_DELAY_FEEDBACK)
+                    FX_DELAY_TIME -> (v + delta).coerceIn(0, TrackEffects.DELAY_BEATS.size - 1)
+                    FX_DELAY_FEEDBACK -> (v + delta).coerceIn(1, TrackEffects.MAX_ECHOES)
                     FX_ATTACK, FX_DECAY, FX_RELEASE -> envelopeStep(v, delta)
                     FX_EVERY -> (v + delta).coerceIn(1, MAX_EVERY)
                     FX_WOBBLE_MODE -> (v + delta).coerceIn(0, WOBBLE_MODES.size - 1)
@@ -2495,11 +2501,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
         private const val PERMISSION_DEVICE = 32
         const val STEP_MASK = (1 shl Sequencer.STEPS) - 1
         const val EFFECT_MASK = (1 shl Sequencer.Effects.GROUPS) - 1
+        private const val FX_VERSION = 2
+        private const val LEGACY_WET_GROUP = 9
+        private const val LEGACY_SHIFT_GROUP = 16
         const val MIN_FILTER_HZ = 20
         const val MAX_FILTER_HZ = 20000
         const val FILTER_STEPS = 100
-        const val MAX_DELAY_MS = 2000
-        const val MAX_DELAY_FEEDBACK = 90
         const val MAX_ENVELOPE_MS = 5000
         const val MAX_EVERY = 16
         const val MIN_WOBBLE_RATE = 5
@@ -2520,25 +2527,24 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val FX_DELAY_TIME = 8
         const val FX_DELAY_FEEDBACK = 9
         const val FX_DELAY_MIX = 10
-        const val FX_WET_MIX = 11
-        const val FX_ATTACK = 12
-        const val FX_DECAY = 13
-        const val FX_SUSTAIN = 14
-        const val FX_RELEASE = 15
-        const val FX_AUTO_KEY = 16
-        const val FX_AUTO_SCALE = 17
-        const val FX_AUTO_STRENGTH = 18
-        const val FX_AUTO_RETUNE = 19
-        const val FX_AUTO_MIX = 20
-        const val FX_SWING = 21
-        const val FX_NUDGE = 22
-        const val FX_CHANCE = 23
-        const val FX_EVERY = 24
-        const val FX_WOBBLE_MODE = 25
-        const val FX_WOBBLE_RATE = 26
-        const val FX_WOBBLE_DEPTH = 27
-        const val FX_TRIM_START = 28
-        const val FX_TRIM_END = 29
+        const val FX_ATTACK = 11
+        const val FX_DECAY = 12
+        const val FX_SUSTAIN = 13
+        const val FX_RELEASE = 14
+        const val FX_AUTO_KEY = 15
+        const val FX_AUTO_SCALE = 16
+        const val FX_AUTO_STRENGTH = 17
+        const val FX_AUTO_RETUNE = 18
+        const val FX_AUTO_MIX = 19
+        const val FX_SWING = 20
+        const val FX_NUDGE = 21
+        const val FX_CHANCE = 22
+        const val FX_EVERY = 23
+        const val FX_WOBBLE_MODE = 24
+        const val FX_WOBBLE_RATE = 25
+        const val FX_WOBBLE_DEPTH = 26
+        const val FX_TRIM_START = 27
+        const val FX_TRIM_END = 28
         @JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Sync", "Project", "System", "Check the back")
         @JvmField val EXPORT_ITEMS = arrayOf("As MIDI", "As WAV", "As Project")
         @JvmField val ADD_SAMPLE = arrayOf("Record microphone", "Record device", "Import sample")
@@ -2560,14 +2566,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
         private val RETIRED_CASSETTE_NAMES = arrayOf("Ruby" to "Laser", "Coral" to "Peach", "Tangerine" to "Blaze", "Lemon" to "Volt", "Lime" to "Toxic",
             "Mint" to "Seafoam", "Teal" to "Cyber", "Sky" to "Powder", "Ocean" to "Powder", "Grape" to "Lavender")
         private val OLD_CASSETTE_NAMES = arrayOf("Smoke", "Ruby", "Tangerine", "Lemon", "Mint", "Ocean", "Grape", "Bubblegum", "Clear", "Lime", "Teal", "Sky", "Coral", "Cocoa")
-        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH PASS", "LOW PASS", "DELAY TIME", "DELAY FEEDBACK", "DELAY MIX", "WET MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END")
+        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH PASS", "LOW PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END")
         @JvmField val WOBBLE_MODES = arrayOf("Volume", "Pitch", "Speed")
-        @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Wet mix", "Pitch", "Low pass", "Nudge", "Chance", "Every Nth", "Wobble", "Shift")
-        @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "BLENDS THE WHOLE FX CHAIN WITH DRY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PICKS WHICH PART OF THE TAPE PLAYS")
+        @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low pass", "Nudge", "Chance", "Every Nth", "Wobble")
+        @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED")
         const val ALONE_REASON = "ADD FILTER, DELAY, DIST OR REVERB"
-        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.SHIFT, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY, Sequencer.Effects.WET)
-        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_WET_MIX), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_TRIM_START, FX_TRIM_END))
-        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("High pass"), arrayOf("Time", "Feedback", "Mix"), arrayOf("Type", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Wet mix"), arrayOf("Pitch"), arrayOf("Low pass"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Start", "End"))
+        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.SHIFT, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
+        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH))
+        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("High pass"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Low pass"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"))
         const val SECRET_TRANS = 0
         const val SECRET_PRIDE = 1
         const val SECRET_SWEDEN = 2
@@ -2593,7 +2599,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
         @JvmStatic fun lockTitle(group: Int) = when {
             Sequencer.Effects.movable(group) -> "NOTHING TO SWAP WITH"
-            group == Sequencer.Effects.VOLUME || group == Sequencer.Effects.WET -> "ALWAYS LAST"
+            group == Sequencer.Effects.VOLUME -> "ALWAYS LAST"
             else -> "ALWAYS FIRST"
         }
 
@@ -2608,6 +2614,11 @@ class MainActivity : Activity(), AudioEngine.Listener {
         }
 
         @JvmStatic fun signed(value: Int) = if (value > 0) "+$value" else value.toString()
+
+        @JvmStatic fun halfSteps(value: Int): String {
+            val text = if (value % 2 == 0) (Math.abs(value) / 2).toString() else String.format(Locale.US, "%.1f", Math.abs(value) / 2.0)
+            return if (value > 0) "+$text" else if (value < 0) "-$text" else text
+        }
 
         @JvmStatic fun seconds(frame: Long): String = String.format(Locale.US, "%.3f", frame / Tape.RATE.toDouble())
     }

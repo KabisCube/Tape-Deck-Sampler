@@ -17,16 +17,16 @@ public final class EffectsTest {
             check(Math.abs(frequency(result) - 440) < 5, "Speed preserves pitch at " + speed + ": " + frequency(result));
         }
         for (int pitch : new int[]{-24, -12, -7, 7, 12, 24}) {
-            short[] result = SampleProcessor.process(tone, 100, pitch);
+            short[] result = SampleProcessor.process(tone, 100, pitch * 2);
             double expected = 440 * Math.pow(2, pitch / 12.0);
             check(result.length == tone.length, "Pitch preserves duration at " + pitch);
             check(Math.abs(frequency(result) - expected) < 6, "Pitch sets frequency at " + pitch + ": " + frequency(result));
         }
-        short[] combined = SampleProcessor.process(tone, 75, 7);
+        short[] combined = SampleProcessor.process(tone, 75, 14);
         check(combined.length == 128000 && Math.abs(frequency(combined) - 659.255) < 6, "Speed and pitch remain independent together");
         for (int speed : new int[]{25, 50, 200, 400}) {
             for (int pitch : new int[]{-24, -12, 12, 24}) {
-                short[] result = SampleProcessor.process(tone, speed, pitch);
+                short[] result = SampleProcessor.process(tone, speed, pitch * 2);
                 check(result.length == Math.round(tone.length * 100f / speed), "Combined transform duration at " + speed + "/" + pitch);
                 check(Math.abs(frequency(result) - 440 * Math.pow(2, pitch / 12.0)) < 6, "Combined transform pitch at " + speed + "/" + pitch);
             }
@@ -41,6 +41,8 @@ public final class EffectsTest {
             short[] result = SampleProcessor.process(tone(hz, Tape.RATE * 2), 150, 0);
             check(Math.abs(frequency(result) - hz) < 5, "Time stretch preserves frequency at " + hz + " Hz");
         }
+        short[] half = SampleProcessor.process(tone, 100, 1);
+        check(Math.abs(frequency(half) - 440 * Math.pow(2, 1 / 24.0)) < 6, "Pitch moves in half semitones: " + frequency(half));
         for (int length : new int[]{1, 2, 48, 400, 2048}) {
             short[] result = SampleProcessor.process(tone(440, length), 50, 12);
             check(result.length == length * 2, "Short slices process safely at " + length);
@@ -148,7 +150,7 @@ public final class EffectsTest {
         seq.tracks[0].end = length;
         for (int pitch : new int[]{-24, -12, 7, 12, 24}) {
             seq.stop(); seq.preview(0); seq.render(new short[12000]);
-            seq.tracks[0].pitch = pitch;
+            seq.tracks[0].pitch = pitch * 2;
             seq.refresh(0); seq.prepareAll();
             short[] output = new short[72000];
             seq.render(output);
@@ -180,18 +182,14 @@ public final class EffectsTest {
         check(power(controls, 100) > power(controls, 5000) * 20, "Low pass attenuates treble and preserves bass");
         controls.lowPass = 0; controls.highPass = 1000;
         check(power(controls, 5000) > power(controls, 100) * 20, "High pass attenuates bass and preserves treble");
-        controls.highPass = 0; controls.delayTime = 10; controls.delayMix = 50; controls.delayFeedback = 50;
+        controls.highPass = 0; controls.delayBeat = 0; controls.delayMix = 50; controls.delayEchoes = 3;
         TrackEffects effects = new TrackEffects();
-        float[] echo = new float[1441];
-        for (int i = 0; i < echo.length; i++) echo[i] = effects.process(i == 0 ? 1 : 0, controls);
-        check(echo[0] == .5f && echo[480] == .5f && echo[960] == .25f && echo[1440] == .125f, "Delay repeats at the chosen time with decaying feedback");
+        float[] echo = new float[12001];
+        for (int i = 0; i < echo.length; i++) echo[i] = effects.process(i == 0 ? 1 : 0, controls, 120);
+        check(echo[0] == 1 && echo[3000] == .375f && echo[6000] == .25f && echo[9000] == .125f && echo[12000] == 0, "Delay repeats on the beat for the chosen echo count");
+        check(TrackEffects.delayFrames(8, 120) == Tape.RATE / 2 && TrackEffects.delayFrames(8, 60) == Tape.RATE, "Delay time follows the BPM");
         effects.reset();
-        check(effects.process(0, controls) == 0, "Reset clears delay tails");
-        controls.wetMix = 0; controls.highPass = 500; controls.distortion = 3;
-        for (short sample : tone(440, 2000)) {
-            float dry = sample / 32768f;
-            check(effects.process(dry, controls) == dry, "Zero wet mix preserves dry audio");
-        }
+        check(effects.process(0, controls, 120) == 0, "Reset clears delay tails");
     }
 
     private static double power(Sequencer.Effects controls, int frequency) {
@@ -199,7 +197,7 @@ public final class EffectsTest {
         short[] signal = tone(frequency, Tape.RATE);
         double power = 0;
         for (int i = 0; i < signal.length; i++) {
-            float output = effects.process(signal[i] / 32768f, controls);
+            float output = effects.process(signal[i] / 32768f, controls, 120);
             checkFinite(output);
             if (i >= Tape.RATE / 4) power += output * output;
         }
@@ -225,7 +223,7 @@ public final class EffectsTest {
         short[] tone = tone(430, 4096);
         for (short sample : tone) {
             float input = sample / 32768f;
-            dry &= effects.process(input, controls) == input;
+            dry &= effects.process(input, controls, 120) == input;
         }
         check(dry, "Power off bypasses filters, delay, distortion and reverb despite stored nonzero settings");
         check(TrackEffects.envelope(5000, 5000, controls) == 1, "Power off bypasses stored ADSR settings");
@@ -328,20 +326,20 @@ public final class EffectsTest {
         boolean different = false;
         for (short sample : signal) {
             float value = sample / 32768f;
-            different |= Math.abs(a.process(value, first) - b.process(value, second)) > .01f;
+            different |= Math.abs(a.process(value, first, 120) - b.process(value, second, 120)) > .01f;
         }
         check(different, "Stack order changes the processed audio");
         Sequencer.Effects order = new Sequencer.Effects(), reversed = new Sequencer.Effects();
-        order.reverb = reversed.reverb = 60; order.delayMix = reversed.delayMix = 60; order.delayTime = reversed.delayTime = 20;
+        order.reverb = reversed.reverb = 60; order.delayMix = reversed.delayMix = 60; order.delayBeat = reversed.delayBeat = 0;
         reversed.move(Sequencer.Effects.DELAY, -1);
         check(reversed.stack()[0] == delay && order.stack()[0] == reverb, "Delay and reverb swap in the stack");
     }
 
     private static void groupResets() {
         Sequencer.Effects source = new Sequencer.Effects();
-        source.gain = .6f; source.mute = true; source.wetMix = 35;
+        source.gain = .6f; source.mute = true;
         source.speed = 75; source.pitch = 7; source.highPass = 500; source.lowPass = 5000;
-        source.delayTime = 480; source.delayFeedback = 70; source.delayMix = 65;
+        source.delayBeat = 3; source.delayEchoes = 5; source.delayMix = 65;
         source.distortion = 2; source.drive = 80; source.distortionMix = 40; source.reverb = 60;
         source.attack = 30; source.decay = 60; source.sustain = 40; source.release = 90;
         source.autoKey = 4; source.autoScale = 2; source.autoStrength = 65; source.autoRetune = 125; source.autoMix = 75;
@@ -352,9 +350,9 @@ public final class EffectsTest {
             boolean reset;
             switch (group) {
                 case Sequencer.Effects.SAMPLE: reset = controls.speed == 100 && controls.pitch == source.pitch; break;
-                case Sequencer.Effects.AUTOTUNE: reset = controls.pitch == source.pitch && controls.speed == source.speed && controls.autoKey == 0 && controls.autoScale == 0 && controls.autoStrength == 0 && controls.autoRetune == 40 && controls.autoMix == 100; break;
+                case Sequencer.Effects.AUTOTUNE: reset = controls.pitch == source.pitch && controls.speed == source.speed && controls.autoKey == 0 && controls.autoScale == 0 && controls.autoStrength == 0 && controls.autoRetune == 0 && controls.autoMix == 100; break;
                 case Sequencer.Effects.HIGH_PASS: reset = controls.highPass == 0 && controls.lowPass == source.lowPass; break;
-                case Sequencer.Effects.DELAY: reset = controls.delayTime == 250 && controls.delayFeedback == 35 && controls.delayMix == 0; break;
+                case Sequencer.Effects.DELAY: reset = controls.delayBeat == 8 && controls.delayEchoes == 3 && controls.delayMix == 0; break;
                 case Sequencer.Effects.DISTORTION: reset = controls.distortion == 0 && controls.drive == 40 && controls.distortionMix == 100; break;
                 case Sequencer.Effects.ENVELOPE: reset = controls.attack == 0 && controls.decay == 0 && controls.sustain == 100 && controls.release == 0; break;
                 case Sequencer.Effects.REVERB: reset = controls.reverb == 0; break;
@@ -362,7 +360,7 @@ public final class EffectsTest {
                 default: throw new AssertionError("Unknown group");
             }
             check(reset, "Submenu Reset restores defaults for group " + group);
-            check(controls.gain == .6f && controls.mute && controls.wetMix == 35, "Group Reset preserves volume, mute and overall mix");
+            check(controls.gain == .6f && controls.mute, "Group Reset preserves volume and mute");
             for (int other : OPTIONAL) {
                 check(controls.powered(other) == (other != group), "Group Reset preserves unrelated power states");
             }
@@ -461,7 +459,7 @@ public final class EffectsTest {
         check(volume.gain == 1, "Deleting pad Volume restores its neutral multiplier");
         check(pad.highPass == 500 && pad.delayMix == 30 && pad.attack == 25, "Pad overrides inherit the new audio effects");
         copied.resetEffects(0);
-        check(source.highPass == 0 && source.delayMix == 0 && source.attack == 0 && source.sustain == 100 && source.wetMix == 100 && source.swingOverride == 0 && source.nudge == 0, "Reset restores neutral audio effects and track timing");
+        check(source.highPass == 0 && source.delayMix == 0 && source.attack == 0 && source.sustain == 100 && source.swingOverride == 0 && source.nudge == 0, "Reset restores neutral audio effects and track timing");
     }
 
     private static boolean[] passes(Sequencer seq, int loops) {

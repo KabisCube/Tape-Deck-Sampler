@@ -24,6 +24,11 @@ import com.tapedecksampler.app.MainActivity.Mode
 import java.util.Locale
 import java.util.Random
 import kotlin.math.abs
+import kotlin.math.PI
+import kotlin.math.sqrt
+import kotlin.math.log10
+import kotlin.math.ln
+import kotlin.math.exp
 import kotlin.math.acos
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -1186,7 +1191,14 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.TEMPO -> menu(c, app.tempoItems())
             Mode.BPM -> value(c, "SEQUENCER TEMPO", app.sequencer.bpm().toString(), if (app.clapClock != null) "BPM / CHANGE REJOINS NEXT LOOP" else "BPM / ${Sequencer.MIN_BPM}–${Sequencer.MAX_BPM}")
             Mode.SWING -> value(c, "SIXTEENTH NOTE SWING", app.sequencer.swing().toString() + "%", Sequencer.MIN_SWING.toString() + "-" + Sequencer.MAX_SWING + "% / ${Sequencer.DEFAULT_SWING}% STRAIGHT")
-            Mode.FX_VALUE -> value(c, MainActivity.FX_LABELS[app.effectParameter], app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), app.effectHint(app.effectParameter))
+            Mode.FX_VALUE -> {
+                val accent = if (app.effectGroup >= 0) EFFECT_COLORS[app.effectGroup] else LCD
+                if (shifting()) shiftTimeline(c, accent)
+                else {
+                    value(c, MainActivity.FX_LABELS[app.effectParameter], app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), app.effectHint(app.effectParameter), accent)
+                    effectVisual(c, accent)
+                }
+            }
             Mode.IMPORT_START, Mode.IMPORT_END -> sourceTimeline(c)
             else -> timeline(c)
         }
@@ -1246,7 +1258,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             val left = if (groups != null) STACK_LEFT else 34f
             val right = if (groups != null) STACK_LEFT + STACK_WIDTH else 366f
             if (selected) rect(c, left, y - 13, right, y + 4, if (groups != null) STACK_RADIUS else 1f, accent)
-            text(c, (if (selected) "> " else "  ") + items[i], left + 5, y, 13f, if (selected) LCD_DARK else LCD, if (selected) monoBold else mono)
+            text(c, (if (selected) "> " else "  ") + items[i], left + 5, y, 13f, if (selected) LCD_DARK else accent, if (selected) monoBold else mono)
             if (groups != null && i < groups.size) effectIcon(c, groups[i], right - STACK_CELL / 2, y - 4.5f, if (selected) LCD_DARK else EFFECT_COLORS[groups[i]], 0.75f)
         }
     }
@@ -1286,16 +1298,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             wheelGlyph(c, 357f, LCD_FOOTER_Y - FOOTER_GLYPH_RISE, -90f, LCD)
             val notice = if (app.selection < stack.size && stack[app.selection] == lockGroup) lockNotice() else null
             if (notice != null) lockPopup(c, MainActivity.lockTitle(lockGroup), notice)
-        } else {
-            val delete = if (app.selection < stack.size) LCD else LCD_DIM
-            val order = if (stack.isNotEmpty()) LCD else LCD_DIM
-            val undo = if (app.canUndoEffect()) LCD else LCD_DIM
-            wheelGlyph(c, 43f, LCD_FOOTER_Y - FOOTER_GLYPH_RISE, 180f, delete)
-            text(c, "DELETE", 55f, LCD_FOOTER_Y, 10f, delete, mono)
-            wheelGlyph(c, 172f, LCD_FOOTER_Y - FOOTER_GLYPH_RISE, 90f, order)
-            text(c, "ORDER", 184f, LCD_FOOTER_Y, 10f, order, mono)
-            rightText(c, "UNDO", 345f, LCD_FOOTER_Y, 10f, undo, mono)
-            wheelGlyph(c, 357f, LCD_FOOTER_Y - FOOTER_GLYPH_RISE, 0f, undo)
         }
     }
 
@@ -1348,7 +1350,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val travel = 260 * t * t
         splitHalf(c, -travel, STACK_LEFT - 4, seam, y)
         splitHalf(c, travel, seam, STACK_LEFT + STACK_WIDTH + 4, y)
-        if (t < 0.35f) line(c, seam, y - 4, seam, bottom + 4, 0xfff6ffd2.toInt(), 3 * (1 - t / 0.35f))
+        if (t < 0.35f) line(c, seam, y - 4, seam, bottom + 4, tint(EFFECT_COLORS[splitGroup], WHITE, 0.5f), 3 * (1 - t / 0.35f))
         val color = EFFECT_COLORS[splitGroup]
         val size = 3 * (1 - t)
         for (i in 0 until 8) {
@@ -1362,11 +1364,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.save()
         c.translate(offset, 0f)
         c.clipRect(left, y - 1, right, y + STACK_HEIGHT + 1)
-        effectRow(c, STACK_LEFT, y, splitGroup, splitIndex, true, false)
+        effectRow(c, STACK_LEFT, y, splitGroup, splitIndex, true, false, true)
         c.restore()
     }
 
-    private fun effectRow(c: Canvas, x: Float, y: Float, group: Int, index: Int, selected: Boolean, held: Boolean) {
+    private fun effectRow(c: Canvas, x: Float, y: Float, group: Int, index: Int, selected: Boolean, held: Boolean, solid: Boolean = false) {
         val color = EFFECT_COLORS[group]
         val ink = if (selected) LCD_DARK else color
         val right = x + STACK_WIDTH
@@ -1374,7 +1376,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val cell = right - STACK_CELL
         if (selected) {
             rect(c, x, y, right, bottom, STACK_RADIUS, color)
-            rect(c, cell, y + 1, right - 1, bottom - 1, 1f, LCD_DARK)
+            if (!solid) rect(c, cell, y + 1, right - 1, bottom - 1, 1f, LCD_DARK)
         } else {
             box(c, x, y, right, bottom, color, 1.2f)
             c.save(); c.clipRect(cell, y, right, bottom)
@@ -1384,7 +1386,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (held) box(c, x - 3, y - 2, right + 3, bottom + 2, 0xfff6ffd2.toInt(), 1f)
         text(c, String.format(Locale.US, "%02d", index + 1), x + 6, y + 16, 8f, ink, mono)
         text(c, MainActivity.FX_NAMES[group].uppercase(Locale.US), x + 24, y + 17, 12f, ink, monoBold)
-        effectIcon(c, group, right - STACK_CELL / 2, y + STACK_HEIGHT / 2, if (selected) color else LCD_DARK, 1f)
+        effectIcon(c, group, right - STACK_CELL / 2, y + STACK_HEIGHT / 2, if (selected && !solid) color else LCD_DARK, 1f)
     }
 
     private fun addRow(c: Canvas, y: Float, selected: Boolean, inset: Float) {
@@ -1498,10 +1500,215 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         paint.strokeCap = Paint.Cap.BUTT; paint.style = Paint.Style.FILL
     }
 
-    private fun value(c: Canvas, title: String, value: String, unit: String) {
-        text(c, title, LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, mono)
-        text(c, value, LCD_LEFT, 158f, if (value.length > LONG_VALUE_CHARS) LONG_VALUE_TEXT else VALUE_TEXT, LCD, monoBold)
-        text(c, unit, LCD_LEFT, 202f, LCD_TEXT, LCD, mono)
+    private fun value(c: Canvas, title: String, value: String, unit: String, accent: Int = LCD) {
+        text(c, title, LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, accent, mono)
+        var size = if (value.length > LONG_VALUE_CHARS) LONG_VALUE_TEXT else VALUE_TEXT
+        if (app.mode == Mode.FX_VALUE && hasVisual(app.effectParameter)) {
+            paint.typeface = monoBold; paint.textSize = size
+            val room = VISUAL_LEFT - LCD_LEFT - 10
+            val width = paint.measureText(value)
+            if (width > room) size *= room / width
+        }
+        text(c, value, LCD_LEFT, 158f, size, accent, monoBold)
+        text(c, unit, LCD_LEFT, 202f, LCD_TEXT, accent, mono)
+    }
+
+    private fun hasVisual(parameter: Int) = parameter !in intArrayOf(MainActivity.FX_SPEED, MainActivity.FX_NUDGE, MainActivity.FX_TRIM_START, MainActivity.FX_TRIM_END, MainActivity.FX_WOBBLE_MODE)
+
+    private fun effectVisual(c: Canvas, accent: Int) {
+        val parameter = app.effectParameter
+        if (!hasVisual(parameter)) return
+        val fx = app.effectControls()
+        val l = VISUAL_LEFT; val r = VISUAL_RIGHT; val t = VISUAL_TOP; val b = VISUAL_BOTTOM
+        val w = r - l; val h = b - t
+        val faint = tint(accent, LCD_DARK, 0.65f)
+        paint.strokeCap = Paint.Cap.ROUND
+        when (parameter) {
+            MainActivity.FX_HIGH_PASS, MainActivity.FX_LOW_PASS -> {
+                val high = parameter == MainActivity.FX_HIGH_PASS
+                val cutoff = if (high) fx.highPass else fx.lowPass
+                for (decade in intArrayOf(100, 1000, 10000)) {
+                    val x = l + w * (ln(decade / 20f) / ln(1000f))
+                    line(c, x, t, x, b, faint, 1f)
+                }
+                curve(c, accent, true) { u ->
+                    if (cutoff <= 0) 1f else {
+                        val ratio = 20f * 1000f.pow(u) / cutoff
+                        val gain = if (high) ratio / sqrt(1 + ratio * ratio) else 1 / sqrt(1 + ratio * ratio)
+                        1 + 20 * log10(max(gain, 1e-4f)) / VISUAL_DB
+                    }
+                }
+                if (cutoff > 0) {
+                    val x = l + w * (ln(cutoff / 20f) / ln(1000f)).coerceIn(0f, 1f)
+                    line(c, x, t - 3, x, b, accent, 1.2f)
+                }
+            }
+            MainActivity.FX_DELAY_TIME, MainActivity.FX_DELAY_FEEDBACK, MainActivity.FX_DELAY_MIX -> {
+                val bpm = app.sequencer.bpm()
+                val echoes = fx.delayEchoes.coerceIn(1, TrackEffects.MAX_ECHOES)
+                val gap = TrackEffects.delayFrames(fx.delayBeat, bpm).toFloat()
+                val beat = Tape.RATE * 60f / bpm
+                val span = max(gap * (echoes + 1), beat * 4)
+                var tick = 0f
+                while (tick <= span) { val x = l + 2 + (w - 4) * tick / span; line(c, x, b - 4, x, b, faint, 1f); tick += beat }
+                line(c, l, b, r, b, faint, 1f)
+                line(c, l + 2, b, l + 2, t, accent, 3f)
+                for (k in 1..echoes) {
+                    val x = l + 2 + (w - 4) * k * gap / span
+                    val level = TrackEffects.echoGain(k, echoes) * fx.delayMix / 100f
+                    line(c, x, b, x, b - h * level, accent, 3f)
+                }
+            }
+            MainActivity.FX_DISTORTION, MainActivity.FX_DISTORTION_MIX -> {
+                val cx = l + w / 2; val cy = (t + b) / 2; val half = min(w, h) / 2
+                line(c, cx - half, cy, cx + half, cy, faint, 1f)
+                line(c, cx, t, cx, b, faint, 1f)
+                line(c, cx - half, cy + half, cx + half, cy - half, faint, 1f)
+                val type = max(1, fx.distortion)
+                val mix = fx.distortionMix / 100f
+                val path = Path()
+                for (i in 0..VISUAL_POINTS) {
+                    val x = -1 + 2f * i / VISUAL_POINTS
+                    val y = (x + (TrackEffects.shape(x, type, fx.drive) - x) * mix).coerceIn(-1f, 1f)
+                    val px = cx + x * half; val py = cy - y * half
+                    if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                }
+                stroke(c, path, accent, 2f)
+            }
+            MainActivity.FX_REVERB -> {
+                val amount = fx.reverb / 100f
+                line(c, l, b, r, b, faint, 1f)
+                line(c, l + 2, b, l + 2, t, accent, 3f)
+                val random = Random(7)
+                var x = l + 7
+                while (x < r) {
+                    val level = amount * exp(-(x - l) / w * 3.2f) * (0.45f + 0.55f * random.nextFloat())
+                    line(c, x, b, x, b - h * level, accent, 1.6f)
+                    x += 3.5f
+                }
+            }
+            MainActivity.FX_ATTACK, MainActivity.FX_DECAY, MainActivity.FX_SUSTAIN, MainActivity.FX_RELEASE -> {
+                val total = max(1f, (fx.attack + fx.decay + fx.release).toFloat())
+                val span = w * 0.72f
+                val xa = l + span * fx.attack / total
+                val xd = xa + span * fx.decay / total
+                val xs = xd + w * 0.28f
+                val ys = b - h * fx.sustain / 100f
+                line(c, l, b, r, b, faint, 1f)
+                stroke(c, Path().apply { moveTo(l, b); lineTo(xa, t); lineTo(xd, ys); lineTo(xs, ys); lineTo(r, b) }, accent, 2f)
+                val (from, to) = when (parameter) {
+                    MainActivity.FX_ATTACK -> l to xa
+                    MainActivity.FX_DECAY -> xa to xd
+                    MainActivity.FX_SUSTAIN -> xd to xs
+                    else -> xs to r
+                }
+                rect(c, from, b + 3, max(to, from + 2), b + 5, 1f, accent)
+            }
+            MainActivity.FX_PITCH -> {
+                val shifted = 2f.pow(fx.pitch / 24f)
+                line(c, l, (t + b) / 2, r, (t + b) / 2, faint, 0.6f)
+                curve(c, faint, false) { u -> 0.5f + 0.4f * sin(u * 4 * PI.toFloat()) }
+                curve(c, accent, false) { u -> 0.5f + 0.4f * sin(u * 4 * PI.toFloat() * shifted) }
+            }
+            MainActivity.FX_AUTO_KEY, MainActivity.FX_AUTO_SCALE -> keyboard(c, fx.autoKey, fx.autoScale, accent, faint)
+            MainActivity.FX_AUTO_STRENGTH, MainActivity.FX_AUTO_RETUNE, MainActivity.FX_AUTO_MIX -> {
+                for (k in 0..3) line(c, l, t + h * k / 3f, r, t + h * k / 3f, faint, 0.6f)
+                val sung = { u: Float -> 0.6f + 1.9f * u + 0.28f * sin(u * 6 * PI.toFloat()) }
+                curve(c, faint, false) { u -> sung(u) / 3f }
+                val follow = if (fx.autoRetune == 0) 1f else 1 - exp(-VISUAL_AUTOTUNE_MS / VISUAL_POINTS / fx.autoRetune)
+                var out = Math.round(sung(0f)).toFloat()
+                val path = Path()
+                for (i in 0..VISUAL_POINTS) {
+                    val u = i / VISUAL_POINTS.toFloat()
+                    val sang = sung(u)
+                    out += (Math.round(sang) - out) * follow
+                    val y = sang + (out - sang) * fx.autoStrength / 100f * fx.autoMix / 100f
+                    val px = l + w * u; val py = b - h * (y / 3f).coerceIn(0f, 1f)
+                    if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                }
+                stroke(c, path, accent, 2f)
+            }
+            MainActivity.FX_WOBBLE_RATE, MainActivity.FX_WOBBLE_DEPTH -> {
+                val hertz = fx.wobbleRate / MainActivity.WOBBLE_RATE_PER_HZ
+                val depth = fx.wobbleDepth / 100f
+                line(c, l, (t + b) / 2, r, (t + b) / 2, faint, 0.6f)
+                curve(c, accent, false) { u -> 0.5f + 0.48f * depth * sin(u * 2 * PI.toFloat() * hertz) }
+            }
+            MainActivity.FX_CHANCE -> {
+                val order = intArrayOf(5, 12, 1, 9, 14, 3, 7, 10, 0, 15, 6, 2, 11, 8, 13, 4)
+                val lit = Math.round(fx.chance * 16 / 100f)
+                for (i in 0 until 16) {
+                    val x = l + w * (i % 8 + 0.5f) / 8; val y = t + h * (i / 8 + 0.5f) / 2
+                    circle(c, x, y, 4.5f, if (order.indexOf(i) < lit) accent else faint)
+                }
+            }
+            MainActivity.FX_EVERY -> {
+                val cells = 8
+                val y0 = (t + b) / 2 - 8; val y1 = (t + b) / 2 + 8
+                for (i in 0 until cells) {
+                    val x0 = l + w * i / cells + 1.5f; val x1 = l + w * (i + 1) / cells - 1.5f
+                    if ((i + 1) % max(1, fx.every) == 0) rect(c, x0, y0, x1, y1, 2f, accent) else box(c, x0, y0, x1, y1, faint, 1f)
+                }
+            }
+            MainActivity.FX_SWING -> {
+                val pair = w / 4
+                for (i in 0 until 8) {
+                    val x = l + 3 + pair * (i / 2) + if (i % 2 == 0) 0f else pair * app.effectValue / 100f
+                    line(c, x, b, x, if (i % 2 == 0) t + 6 else t + h * 0.45f, if (i % 2 == 0) faint else accent, 3f)
+                }
+            }
+            MainActivity.FX_VOLUME -> {
+                rect(c, l, b - 10, r, b, 2f, faint)
+                rect(c, l, b - 10, l + w * app.effectValue / 100f, b, 2f, accent)
+            }
+        }
+        paint.strokeCap = Paint.Cap.BUTT; paint.style = Paint.Style.FILL
+    }
+
+    private fun curve(c: Canvas, color: Int, fill: Boolean, y: (Float) -> Float) {
+        val path = Path()
+        for (i in 0..VISUAL_POINTS) {
+            val u = i / VISUAL_POINTS.toFloat()
+            val px = VISUAL_LEFT + (VISUAL_RIGHT - VISUAL_LEFT) * u
+            val py = VISUAL_BOTTOM - (VISUAL_BOTTOM - VISUAL_TOP) * y(u).coerceIn(0f, 1f)
+            if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+        }
+        if (fill) {
+            val area = Path(path).apply { lineTo(VISUAL_RIGHT, VISUAL_BOTTOM); lineTo(VISUAL_LEFT, VISUAL_BOTTOM); close() }
+            paint.color = color; paint.alpha = 60; paint.style = Paint.Style.FILL
+            c.drawPath(area, paint)
+            paint.alpha = 255
+        }
+        stroke(c, path, color, 2f)
+    }
+
+    private fun stroke(c: Canvas, path: Path, color: Int, width: Float) {
+        paint.color = color; paint.strokeWidth = width; paint.style = Paint.Style.STROKE; paint.strokeJoin = Paint.Join.ROUND
+        c.drawPath(path, paint)
+        paint.style = Paint.Style.FILL
+    }
+
+    private fun keyboard(c: Canvas, key: Int, scale: Int, accent: Int, faint: Int) {
+        val whites = intArrayOf(0, 2, 4, 5, 7, 9, 11)
+        val blacks = intArrayOf(1, 3, -1, 6, 8, 10)
+        val l = VISUAL_LEFT; val t = VISUAL_TOP; val b = VISUAL_BOTTOM
+        val keyWidth = (VISUAL_RIGHT - VISUAL_LEFT) / whites.size
+        val inScale = { note: Int -> PitchCorrector.nearestNote(note.toDouble(), key, scale) == note }
+        for (i in whites.indices) {
+            val note = whites[i]
+            val x0 = l + keyWidth * i + 1; val x1 = l + keyWidth * (i + 1) - 1
+            if (inScale(note)) rect(c, x0, t, x1, b, 2f, accent) else box(c, x0, t, x1, b, faint, 1f)
+            if (note == key) circle(c, (x0 + x1) / 2, b - 7, 3f, LCD_DARK)
+        }
+        for (i in blacks.indices) {
+            val note = blacks[i]
+            if (note < 0) continue
+            val cx = l + keyWidth * (i + 1)
+            val x0 = cx - keyWidth * 0.32f; val x1 = cx + keyWidth * 0.32f; val y1 = t + (b - t) * 0.58f
+            rect(c, x0 - 1.5f, t, x1 + 1.5f, y1 + 1.5f, 2f, LCD_DARK)
+            if (inScale(note)) rect(c, x0, t, x1, y1, 2f, accent) else box(c, x0, t, x1, y1, faint, 1f)
+            if (note == key) circle(c, cx, y1 - 6, 2.5f, LCD_DARK)
+        }
     }
 
     private fun timeline(c: Canvas) {
@@ -1526,6 +1733,29 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             text(c, "RANGE " + MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_LEFT, LCD_HINT_Y, LCD_SMALL_TEXT, LCD, mono)
         }
         rightText(c, (if (app.fine) "FINE " else "STEP ") + app.timelineIncrement() * 1000 / Tape.RATE + " ms", LCD_RIGHT, 187f, LCD_SMALL_TEXT, LCD, mono)
+    }
+
+    private fun shifting() = app.mode == Mode.FX_VALUE && (app.effectParameter == MainActivity.FX_TRIM_START || app.effectParameter == MainActivity.FX_TRIM_END)
+
+    private fun shiftTimeline(c: Canvas, accent: Int) {
+        val track = app.sequencer.tracks[app.track]
+        val controls = app.effectControls()
+        val a = Sequencer.sliceStart(track, controls)
+        val b = Sequencer.sliceEnd(track, controls)
+        val margin = MainActivity.MAX_SHIFT_MS * (Tape.RATE / 1000)
+        val from = max(0, track.start - margin)
+        val to = min(Tape.LENGTH, track.end + margin)
+        text(c, MainActivity.FX_LABELS[app.effectParameter], LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, accent, mono)
+        wave(c, from, to, a, b, 104f, 152f)
+        val window = (to - from).toFloat()
+        for (edge in intArrayOf(track.start, track.end)) {
+            val x = WAVE_LEFT + WAVE_WIDTH * (edge - from) / window
+            var y = 104f
+            while (y < 152f) { line(c, x, y, x, min(152f, y + 3), tint(accent, LCD_DARK, 0.4f), 1f); y += 6 }
+        }
+        text(c, app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), LCD_LEFT, 186f, 20f, accent, monoBold)
+        rightText(c, MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_RIGHT, 186f, LCD_SMALL_TEXT, accent, mono)
+        text(c, app.effectHint(app.effectParameter), LCD_LEFT, 205f, LCD_TEXT, accent, mono)
     }
 
     private fun sourceTimeline(c: Canvas) {
@@ -1578,7 +1808,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val x2 = left + width * (b - windowStart) / window
         c.save()
         c.clipRect(left - 3, top, left + width + 3, bottom)
-        if (app.mode == Mode.HOME || app.isTimelineMode()) {
+        if (app.mode == Mode.HOME || app.isTimelineMode() || shifting()) {
             val selectionLeft = max(left, x1)
             val selectionRight = min(left + width, x2)
             if (selectionRight > selectionLeft) rect(c, selectionLeft, top, selectionRight, bottom, 0f,
@@ -1607,6 +1837,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             c.restore()
         }
         if (app.isTimelineMode()) selectionEdges(c, x1, x2, top, bottom, app.mode != Mode.END && app.mode != Mode.RECORDING)
+        if (shifting()) selectionEdges(c, x1, x2, top, bottom, app.effectParameter == MainActivity.FX_TRIM_START)
         c.restore()
         text(c, axisTime(windowStart.toLong(), (windowEnd - windowStart).toLong()), left, bottom + 10, 7f, 0xff8e9e7c.toInt(), mono)
         rightText(c, axisTime(windowEnd.toLong(), (windowEnd - windowStart).toLong()), left + width, bottom + 10, 7f, 0xff8e9e7c.toInt(), mono)
@@ -2212,7 +2443,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private val LCD = Color.rgb(190, 211, 148)
         private const val LCD_DARK = 0xff101a16.toInt()
         private const val LCD_DIM = 0xff4d5a45.toInt()
-        private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xffc4a982, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060, 0xfff6a6a6).map { it.toInt() }.toIntArray()
+        private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060).map { it.toInt() }.toIntArray()
         private const val STACK_ROWS = 4
         private val TRANS_STRIPES = longArrayOf(0xff5bcefa, 0xfff5a9b8, 0xffffffff, 0xfff5a9b8, 0xff5bcefa).map { it.toInt() }.toIntArray()
         private val PRIDE_STRIPES = longArrayOf(0xffec5b5b, 0xffffae58, 0xfffff070, 0xff5cae72, 0xff6890e6, 0xffa064b0).map { it.toInt() }.toIntArray()
@@ -2296,6 +2527,13 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val LONG_VALUE_TEXT = 31f
         private const val VALUE_TEXT = 46f
         private const val LCD_FOOTER_Y = 216f
+        private const val VISUAL_LEFT = 254f
+        private const val VISUAL_RIGHT = 360f
+        private const val VISUAL_TOP = 110f
+        private const val VISUAL_BOTTOM = 166f
+        private const val VISUAL_POINTS = 64
+        private const val VISUAL_DB = 30f
+        private const val VISUAL_AUTOTUNE_MS = 900f
         private const val FOOTER_GLYPH_RISE = 4f
         private const val PULSE_MILLIS = 1800
         private const val MENU_ROWS = 7
