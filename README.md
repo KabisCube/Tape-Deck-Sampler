@@ -11,6 +11,9 @@ Record from your mic, another app, or load samples directly and slice them into 
 
 Tape Deck Sampler supports Project, MIDI and WAV exports.
 
+## Download
+
+[Download Tape Deck Sampler from GitHub Releases](https://github.com/KabisCube/Tape-Deck-Sampler/releases)
 
 ## Clap & Sync
 
