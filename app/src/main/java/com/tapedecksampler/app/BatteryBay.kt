@@ -37,8 +37,8 @@ class BatteryBay(private val settings: SharedPreferences) {
     }
 
     fun full() = installed.all { it }
-    fun powered() = full() && (!useBatteries || charge.all { it > 0f })
-    fun level() = charge.minOrNull() ?: 0f
+    fun powered() = full() && (!useBatteries || charge.any { it > 0f })
+    fun level() = charge.sum() / SLOTS
     fun remainingMillis() = (level() * LIFE_MILLIS).toLong()
     fun low() = remainingMillis() <= LOW_MILLIS
 
@@ -68,7 +68,18 @@ class BatteryBay(private val settings: SharedPreferences) {
 
     fun drain(millis: Long): Boolean {
         if (!useBatteries || !powered() || millis <= 0) return false
-        for (i in 0 until SLOTS) charge[i] = (charge[i] - millis.toFloat() / LIFE_MILLIS).coerceAtLeast(0f)
+        var owed = SLOTS * millis.toFloat() / LIFE_MILLIS
+        while (owed > 0f) {
+            val live = charge.count { it > 0f }
+            if (live == 0) break
+            val share = owed / live
+            owed = 0f
+            for (i in 0 until SLOTS) if (charge[i] > 0f) {
+                val taken = minOf(charge[i], share)
+                charge[i] -= taken; owed += share - taken
+            }
+            if (owed < DRAIN_EPSILON) break
+        }
         return !powered()
     }
 
@@ -95,6 +106,7 @@ class BatteryBay(private val settings: SharedPreferences) {
         const val LIFE_MILLIS = 5 * 3_600_000L
         const val LOW_MILLIS = 15 * 60_000L
         const val SWAP_LEVEL = 0.5f
+        private const val DRAIN_EPSILON = 1e-7f
         @JvmField val BRAND_NAMES = arrayOf("TAPECELL", "CLAPTRON", "LOOPJUICE", "HISS+", "REWINDER", "WOW&FLUTTER", "B-SIDE", "SPOOLBOY", "PADPOWER", "KABISCELL", "DOUBLETIME", "VOLTOWL")
     }
 }

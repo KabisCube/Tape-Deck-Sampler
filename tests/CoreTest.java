@@ -105,10 +105,50 @@ public final class CoreTest {
                 check(reopened.samples[3000] == 12000, "Tape survives reopening");
             }
             sessions(path);
+            trackPlayback();
             System.out.println(checks + " core checks passed");
         } finally {
             Files.deleteIfExists(path.toPath());
         }
+    }
+
+    private static void trackPlayback() throws Exception {
+        File path = Files.createTempFile("track-playback-", ".wav").toFile();
+        try (Tape tape = new Tape(path)) {
+            int sampleLength = Tape.RATE;
+            short[] source = new short[sampleLength * 2];
+            int rampStart = 2000, rampFrames = 8, otherLevel = 4000;
+            for (int i = 0; i < sampleLength; i++) source[i] = (short) (rampStart + i / rampFrames);
+            Arrays.fill(source, sampleLength, source.length, (short) otherLevel);
+            tape.write(0, source, source.length);
+            Sequencer seq = new Sequencer(tape);
+            seq.tracks[0].end = sampleLength;
+            seq.tracks[0].gain = 1;
+            seq.tracks[1].start = sampleLength;
+            seq.tracks[1].end = source.length;
+            seq.tracks[1].gain = 1;
+            float padGain = .5f;
+            seq.editStep(0, 1).gain = padGain;
+            short[] block = new short[256];
+            int last = block.length - 1;
+            seq.previewStep(0, 0); seq.render(block);
+            check(block[last] == source[last], "First pad plays the track sample");
+            seq.previewStep(0, 1); seq.render(block);
+            check(block[last] == Math.round(source[last] * padGain), "Another pad cuts the previous pad and restarts with its own effects");
+            seq.preview(1); seq.render(block);
+            check(block[last] == otherLevel + Math.round(source[block.length + last] * padGain), "Another track starts without cutting the current track");
+            for (int repeat = 0; repeat < 100; repeat++) { seq.previewStep(0, 1); seq.render(block); }
+            check(block[last] == otherLevel + Math.round(source[last] * padGain), "Repeated pads replace their own voice and preserve another track");
+            seq.preview(0); seq.render(block);
+            check(block[last] == otherLevel + source[last], "Track preview replaces its pad voice without cutting another track");
+            seq.stop();
+            seq.tracks[0].steps = 3;
+            seq.tracks[1].steps = 1;
+            seq.tempo(Sequencer.DEFAULT_BPM);
+            int stepFrames = Tape.RATE * 15 / Sequencer.DEFAULT_BPM;
+            seq.play(); seq.render(new short[stepFrames]); seq.render(block);
+            check(block[last] == otherLevel + Math.round(source[last] * padGain), "Sequenced pads cut only their own track's preceding sample");
+        } finally { Files.deleteIfExists(path.toPath()); }
     }
 
     private static void selectionPlayback(Tape tape) {

@@ -14,12 +14,18 @@ import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.SystemClock
+import android.text.Editable
+import android.text.InputType
+import android.text.Selection
 import android.text.TextPaint
 import android.text.TextUtils
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import com.tapedecksampler.app.MainActivity.Mode
 import java.util.Locale
 import java.util.Random
@@ -91,6 +97,19 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private var carouselOutColor = 0
     private var carouselShownColor = 0
     private var carouselKey = Int.MIN_VALUE
+    private var carouselDirection = 1
+    private var carouselList = false
+    private var carouselScroll = 0f
+    private var carouselFrame = 0L
+    private var transitionTarget = -1
+    private var transitionStart = 0L
+    private var revealStart = -REVEAL_MILLIS
+
+    fun pageTransition(target: Int) {
+        transitionTarget = target; transitionStart = SystemClock.uptimeMillis()
+        invalidate()
+        postDelayed({ transitionTarget = -1; revealStart = SystemClock.uptimeMillis(); app.finishPageOpen() }, SPREAD_MILLIS + OPEN_HOLD_MILLIS)
+    }
     private var showingBack = false
     private var pressed = -1
     private var pressedTrack = -1
@@ -119,6 +138,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private var turningNow = false
 
     private val hold = Runnable {
+        if (app.generatorMenu() || app.mode == Mode.TEXT) return@Runnable
         if (pressedTrack >= 0) { held = true; app.toggleTrackMute(pressedTrack) }
         else if (pressed >= 0) {
             held = true
@@ -130,7 +150,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     init {
         isFocusable = true
         isFocusableInTouchMode = true
-        contentDescription = app.getString(R.string.app_name) + ". Rotate the wheel to browse or trim. Menus stop at their ends. Select confirms. Left edits the sample start; right edits its end. The center MENU button opens the menu on Home. The bottom of the wheel opens sequence pages. Each pad selects or manages a page there, and holding a pad enables or disables its page. Hold the magnifying glass button to zoom timelines. Tap the left minus or turn counterclockwise to zoom out. Tap the right plus or turn clockwise to zoom in. Rotate the wheel on Home to change tracks. The triangular play/pause button plays or pauses. Left hand mode in System swaps Play/Pause and Zoom. Tap T01 through T08 to select and play tracks. Hold a track button to mute or unmute it. Muted track buttons are red. Pads toggle steps; hold a pad to edit its effects. On the effects page, the wheel's bottom reorders effects, left deletes and right undoes."
+        contentDescription = app.getString(R.string.app_name) + ". Rotate the wheel to browse or trim. Menus stop at their ends. Select confirms. Left edits the sample start; right edits its end. The center MENU button opens the menu on Home. The bottom of the wheel opens sequence pages. There, turn the wheel to highlight a page; left copies it, right pastes, the bottom moves it, a pad opens its page and holding a pad enables or disables it. Text is typed with the Android keyboard and shown on the sampler screen; Select finishes and tapping the screen reopens the keyboard. Hold the magnifying glass button to zoom timelines. Tap the left minus or turn counterclockwise to zoom out. Tap the right plus or turn clockwise to zoom in. Rotate the wheel on Home to change tracks. The triangular play/pause button plays or pauses. Left hand mode in System swaps Play/Pause and Zoom. Tap T01 through T08 to select and play tracks. Hold a track button to mute or unmute it. Muted track buttons are red. Pads toggle steps; hold a pad to edit its effects. On the effects page, the wheel's bottom opens options for copying, pasting and reordering effects, left deletes and right undoes."
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
     }
 
@@ -189,8 +209,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         turningNow = false
         if (lidOnTop) travellingLid(c, flip, back)
         c.restore()
-        val moving = flip < 1 || insertStart >= 0 || app.carouselMode() || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0 ||
-            app.mode == Mode.PAGE_COPIED && now - app.copiedAt < COPIED_MILLIS + 50
+        val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || app.carouselMode() || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0
         if (animating && (splitGroup >= 0 || moving)) postInvalidateOnAnimation()
         else if (animating && (app.sequencer.isPlaying() || app.sequencer.isSyncWaiting() || app.sequencer.isPreviewing() || app.mode == Mode.RECORDING || app.mode == Mode.FX_REORDER || app.busy)) postInvalidateDelayed(FRAME_MILLIS)
     }
@@ -357,7 +376,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             name = insertName; color = insertColor
             y = if (t >= LOAD_END) SLOT_Y else OUT_Y + (SLOT_Y - OUT_Y) * ease((t - EJECT_END) / (LOAD_END - EJECT_END).toFloat())
         }
-        cassette(c, UI_CENTER_X, y, color, name, 0f)
+        if (name != null) cassette(c, UI_CENTER_X, y, color, name, 0f)
     }
 
     private fun hatchPanel(c: Canvas, degrees: Float) {
@@ -389,8 +408,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         rect(c, left, top, right, bottom, 2f, 0xff1b1c19.toInt())
         c.save(); c.clipRect(left, top, right, bottom)
         if (seated) {
-            val name = if (t < 0) app.session.name() else if (t >= EJECT_END) insertName else ejectName
-            cassette(c, UI_CENTER_X, top + 4 + CASSETTE_H / 2, color, name, 0f)
+            val name = if (t < 0) (if (app.noTape) null else app.session.name()) else if (t >= EJECT_END) insertName else ejectName
+            if (name != null) cassette(c, UI_CENTER_X, top + 4 + CASSETTE_H / 2, color, name, 0f)
             rect(c, left, top, right, bottom, 0f, 0x30000000)
         }
         paint.shader = LinearGradient(0f, top, 0f, bottom, 0x30ffffff, 0x08ffffff, Shader.TileMode.CLAMP)
@@ -519,36 +538,62 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun hoverShadow(c: Canvas, cx: Float, cy: Float) {
-        rect(c, cx - CASSETTE_W / 2 + 10, cy - CASSETTE_H / 2 + 16, cx + CASSETTE_W / 2 - 4, cy + CASSETTE_H / 2 + 16, 14f, 0x22000000)
-        rect(c, cx - CASSETTE_W / 2 + 6, cy - CASSETTE_H / 2 + 11, cx + CASSETTE_W / 2 - 2, cy + CASSETTE_H / 2 + 10, 13f, 0x26000000)
+        rect(c, cx - CASSETTE_W / 2 - 12, cy - CASSETTE_H / 2 + 22, cx + CASSETTE_W / 2 - 16, cy + CASSETTE_H / 2 + 22, 14f, 0x22000000)
+        rect(c, cx - CASSETTE_W / 2 - 8, cy - CASSETTE_H / 2 + 16, cx + CASSETTE_W / 2 - 10, cy + CASSETTE_H / 2 + 15, 13f, 0x26000000)
     }
 
     private fun carousel(c: Canvas, now: Long) {
-        if (!app.carouselMode() || insertStart >= 0) { carouselKey = Int.MIN_VALUE; return }
+        if (!app.carouselMode() || insertStart >= 0) { carouselKey = Int.MIN_VALUE; carouselList = false; return }
+        if (app.mode == Mode.PROJECT_OPEN || app.mode == Mode.PROJECT_EDIT) { carouselShelf(c, now); return }
+        carouselList = false
         val name = app.carouselName()
         val color = app.carouselColor()
         val key = app.carouselKey()
         if (key != carouselKey) {
             if (carouselKey != Int.MIN_VALUE && carouselShownName != null) { carouselOutName = carouselShownName; carouselOutColor = carouselShownColor }
             else carouselOutName = null
+            carouselDirection = if (carouselKey != Int.MIN_VALUE && key < carouselKey) 1 else -1
             carouselKey = key; carouselStart = now
         }
         carouselShownName = name; carouselShownColor = color
         val t = min(1f, (now - carouselStart) / CAROUSEL_MILLIS.toFloat())
         val outgoing = carouselOutName
         if (outgoing != null && t < 1) {
-            val x = UI_CENTER_X + CAROUSEL_TRAVEL * ease(t)
+            val x = UI_CENTER_X - carouselDirection * CAROUSEL_TRAVEL * ease(t)
             hoverShadow(c, x, CAROUSEL_Y)
             cassette(c, x, CAROUSEL_Y, carouselOutColor, outgoing, 0f)
         }
-        val x = UI_CENTER_X - CAROUSEL_TRAVEL + CAROUSEL_TRAVEL * ease(t)
+        val x = UI_CENTER_X + carouselDirection * CAROUSEL_TRAVEL * (1 - ease(t))
         val bob = sin(now / BOB_MILLIS).toFloat() * BOB_HEIGHT
-        hoverShadow(c, x, CAROUSEL_Y)
+        hoverShadow(c, x, CAROUSEL_Y + bob)
         cassette(c, x, CAROUSEL_Y + bob, color, name, 0f)
     }
 
+    private fun carouselShelf(c: Canvas, now: Long) {
+        val list = app.browseList()
+        if (list.isEmpty()) return
+        val target = min(app.selection, list.size - 1).toFloat()
+        if (!carouselList) { carouselScroll = if (carouselKey == Int.MIN_VALUE) target - SHELF_ENTRY else target; carouselFrame = now }
+        carouselList = true
+        val dt = min(0.1f, (now - carouselFrame) / 1000f)
+        carouselFrame = now
+        carouselScroll += (target - carouselScroll) * min(1f, dt * SHELF_SPEED)
+        if (abs(target - carouselScroll) < 0.001f) carouselScroll = target
+        val bob = sin(now / BOB_MILLIS).toFloat() * BOB_HEIGHT
+        val first = max(0, kotlin.math.floor(carouselScroll).toInt() - 2)
+        val last = min(list.size - 1, kotlin.math.ceil(carouselScroll).toInt() + 2)
+        for (i in first..last) {
+            val x = UI_CENTER_X - (i - carouselScroll) * SHELF_SPACING
+            if (abs(x - UI_CENTER_X) > UI_WIDTH / 2 + CASSETTE_W / 2) continue
+            val y = CAROUSEL_Y + if (i == target.toInt()) bob else 0f
+            hoverShadow(c, x, y)
+            cassette(c, x, y, app.cassetteColor(list[i]), list[i].name(), 0f)
+        }
+        carouselKey = app.carouselKey(); carouselShownName = app.carouselName(); carouselShownColor = app.carouselColor()
+    }
+
     private fun risingCassette(c: Canvas, t: Long) {
-        if (t >= RISE_END) return
+        if (t >= RISE_END || insertName == null) return
         val y = CAROUSEL_Y + (OUT_Y - CAROUSEL_Y) * (t / RISE_END.toFloat()).toDouble().pow(1.7).toFloat()
         cassette(c, UI_CENTER_X, y, insertColor, insertName, 0f)
     }
@@ -1123,30 +1168,25 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (app.sequencer.isPlaying() && app.sequencer.playingPage() >= 0) rect(c, pageRight - 10, 50f, pageRight, 60f, 1f, app.sequencer.page(app.sequencer.playingPage()).color)
         if (meter) batteryMeter(c)
         line(c, 35f, 69f, 365f, 69f, 0xff42503b.toInt(), 1f)
-        if (app.busy) {
+        if (app.busy && !app.quietWork) {
             text(c, "WORKING", LCD_LEFT, 108f, 22f, LCD, mono)
             wrapped(c, app.message, LCD_LEFT, 138f, 38, 11f, LCD)
         } else when (app.mode) {
             Mode.HOME -> home(c)
-            Mode.PAGES -> {
-                if (app.pagePrompt) {
-                    text(c, MainActivity.PAGE_ACTIONS[app.selection].uppercase(Locale.US), LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, mono)
-                    text(c, app.pagePromptText(), LCD_LEFT, 150f, 20f, LCD, monoBold)
-                } else menu(c, MainActivity.PAGE_ACTIONS)
-                val hint = when {
-                    !app.pagePrompt -> "PRESS: OPEN PAGE  HOLD: ON / OFF"
-                    app.selection == 1 -> if (app.swapSource < 0) "PRESS FIRST PAGE" else "SWAP " + (app.swapSource + 1) + " / PRESS SECOND"
-                    else -> "PRESS A PAD"
-                }
-                text(c, hint, LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
-            }
-            Mode.PAGE_COPIED ->
-                if (SystemClock.uptimeMillis() - app.copiedAt < COPIED_MILLIS) value(c, "COPY PAGE", String.format(Locale.US, "COPIED %02d", app.pageClipboardSource + 1), "READY TO PASTE")
-                else value(c, "PASTE PAGE", "SELECT PAD", String.format(Locale.US, "TO PASTE PAGE %02d TO", app.pageClipboardSource + 1))
-            Mode.PAGE_PASTE -> value(c, "PASTE PAGE", String.format(Locale.US, "PASTE %02d → %02d?", app.pageClipboardSource + 1, app.pasteTarget + 1), "REPLACES ITS PATTERN AND EFFECTS")
-            Mode.PAGE_RESET -> value(c, "RESET PAGE", String.format(Locale.US, "RESET PAGE %02d?", app.pasteTarget + 1), "CLEARS ITS PATTERN AND EFFECTS")
+            Mode.PAGES -> pagesScreen(c)
+            Mode.TEXT -> textScreen(c)
+            Mode.SYNTH -> if (app.synthEditing) {
+                val parameter = app.selection
+                value(c, "SYNTH " + ToneSynth.LABELS[parameter].uppercase(Locale.US), ToneSynth.display(parameter, app.synth[parameter]).uppercase(Locale.US), ToneSynth.hint(parameter))
+                synthVisual(c, parameter)
+            } else menu(c, app.synthItems())
+            Mode.FX_OPTIONS -> menu(c, app.optionItems(), enabled = app::optionEnabled)
             Mode.MENU -> menu(c, MainActivity.MENU)
             Mode.ADD_SAMPLE -> menu(c, MainActivity.ADD_SAMPLE)
+            Mode.SPEECH, Mode.SPEECH_VOICE -> {
+                menu(c, if (app.mode == Mode.SPEECH) app.speechItems() else RetroSpeech.voices)
+                text(c, String.format(Locale.US, "PLAY OR T%02d: PREVIEW", app.track + 1), LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
+            }
             Mode.DEVICE_RECORD -> deviceRecording(c)
             Mode.SYSTEM -> menu(c, app.systemItems())
             Mode.EXPORT -> menu(c, MainActivity.EXPORT_ITEMS)
@@ -1174,7 +1214,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     text(c, "SELECT: CONTINUE / RETRY  RETURN: EXIT", LCD_LEFT, LCD_HINT_Y, LCD_SMALL_TEXT, LCD, mono)
                 }
             }
-            Mode.PROJECTS -> menu(c, MainActivity.PROJECT_ITEMS)
+            Mode.PROJECTS -> {
+                menu(c, MainActivity.PROJECT_ITEMS)
+                if (app.noTape) text(c, "NO TAPE IN THE DECK", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, ORANGE, monoBold)
+            }
             Mode.PROJECT_OPEN, Mode.PROJECT_EDIT -> tapeBrowser(c, app.mode == Mode.PROJECT_OPEN)
             Mode.PROJECT_EDIT_MENU -> menu(c, MainActivity.PROJECT_EDIT_ITEMS)
             Mode.PROJECT_COLOR -> colorPicker(c)
@@ -1183,7 +1226,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 wrapped(c, "Erases " + app.carouselName() + " with its sample tape and sequences.", LCD_LEFT, 128f, 38, 11f, LCD)
                 text(c, "SELECT: DELETE  RETURN: KEEP", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
             }
-            Mode.EFFECTS -> if (app.effectGroup < 0) effectStack(c) else menu(c, app.effectItems(), EFFECT_COLORS[app.effectGroup], null)
+            Mode.EFFECTS -> if (app.effectGroup < 0) effectStack(c) else {
+                menu(c, app.effectItems(), EFFECT_COLORS[app.effectGroup], enabled = app::effectRowEnabled)
+            }
             Mode.FX_ADD -> menu(c, app.addItems(), LCD, app.addGroups())
             Mode.FX_REORDER -> effectStack(c)
             Mode.VIBRATION -> value(c, "VIBRATION INTENSITY", if (app.vibrationIntensity == 0) "OFF" else app.vibrationIntensity.toString() + "%", "TURN TO FEEL / SELECT TO SAVE")
@@ -1193,7 +1238,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.SWING -> value(c, "SIXTEENTH NOTE SWING", app.sequencer.swing().toString() + "%", Sequencer.MIN_SWING.toString() + "-" + Sequencer.MAX_SWING + "% / ${Sequencer.DEFAULT_SWING}% STRAIGHT")
             Mode.FX_VALUE -> {
                 val accent = if (app.effectGroup >= 0) EFFECT_COLORS[app.effectGroup] else LCD
-                if (shifting()) shiftTimeline(c, accent)
+                if (app.shifting()) shiftTimeline(c, accent)
                 else {
                     value(c, MainActivity.FX_LABELS[app.effectParameter], app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), app.effectHint(app.effectParameter), accent)
                     effectVisual(c, accent)
@@ -1205,6 +1250,70 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (showsTapeIcon()) tapeIcon(c, 364f, 200f, tapeFraction())
         drawingScreen = false
         c.restore()
+    }
+
+    private fun pageChip(c: Canvas, index: Int, color: Int, x: Float, y: Float) {
+        rect(c, x - PAGE_CHIP_W / 2, y - PAGE_CHIP_H / 2, x + PAGE_CHIP_W / 2, y + PAGE_CHIP_H / 2, 3f, color)
+        centeredText(c, String.format(Locale.US, "%02d", index + 1), x, y, 19f, INK, bold)
+    }
+
+    private fun arrow(c: Canvas, from: Float, to: Float, y: Float) {
+        val head = if (to > from) -6f else 6f
+        line(c, from, y, to, y, LCD, 2f)
+        line(c, to, y, to + head, y - 5, LCD, 2f)
+        line(c, to, y, to + head, y + 5, LCD, 2f)
+    }
+
+    private fun pagesScreen(c: Canvas) {
+        val cursor = app.pageCursor
+        val clipboard = app.pageClipboard
+        val note = app.pageNote
+        val moving = app.moveSource >= 0
+        val moved = note == MainActivity.PAGE_NOTE_MOVED
+        val pasted = note == MainActivity.PAGE_NOTE_PASTED
+        val left = UI_CENTER_X - PAGE_PAIR_GAP
+        val right = UI_CENTER_X + PAGE_PAIR_GAP
+        var title = "PAGE"
+        var hint = "PAD PRESS: OPEN    PAD LONG PRESS: ON/OFF"
+        if (moving || moved) {
+            val from = if (moving) app.moveSource else app.pageNoteFrom
+            val to = if (moving) cursor else app.pageNoteTo
+            pageChip(c, from, app.sequencer.page(from).color, left, PAGE_CHIP_Y)
+            arrow(c, UI_CENTER_X - 16, UI_CENTER_X + 16, PAGE_CHIP_Y - 5)
+            arrow(c, UI_CENTER_X + 16, UI_CENTER_X - 16, PAGE_CHIP_Y + 7)
+            if (to != from) pageChip(c, to, app.sequencer.page(to).color, right, PAGE_CHIP_Y)
+            else box(c, right - PAGE_CHIP_W / 2, PAGE_CHIP_Y - PAGE_CHIP_H / 2, right + PAGE_CHIP_W / 2, PAGE_CHIP_Y + PAGE_CHIP_H / 2, LCD_DIM, 1.5f)
+            title = if (moved) "MOVED" else "MOVE"
+            hint = if (moved) "" else if (to == from) "TURN TO ANOTHER PAGE" else "PRESS MOVE TO SWAP  RETURN: CANCEL"
+        } else if (pasted || clipboard != null && app.pageCopyActive) {
+            val to = if (pasted) app.pageNoteTo else cursor
+            pageChip(c, app.pageClipboardSource, if (pasted) app.pastedColor else clipboard!!.color, left, PAGE_CHIP_Y)
+            arrow(c, UI_CENTER_X - 16, UI_CENTER_X + 16, PAGE_CHIP_Y + 1)
+            pageChip(c, to, app.sequencer.page(to).color, right, PAGE_CHIP_Y)
+            title = if (pasted) "PASTED" else "COPY"
+            hint = if (pasted) "" else "PRESS A PAD OR TURN, THEN PASTE"
+        } else {
+            val flat = if (transitionTarget >= 0) 1 - smoother((SystemClock.uptimeMillis() - transitionStart) / FLATTEN_MILLIS.toFloat()) else 1f
+            c.save(); c.scale(1f, max(0.001f, flat), UI_CENTER_X, PAGE_CHIP_Y)
+            pageChip(c, cursor, app.sequencer.page(cursor).color, UI_CENTER_X, PAGE_CHIP_Y)
+            c.restore()
+        }
+        centeredText(c, title, UI_CENTER_X, PAGE_CHIP_Y - PAGE_CHIP_H / 2 - 22, 20f, LCD, monoBold)
+        if (hint.isNotEmpty()) text(c, hint, LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
+    }
+
+    private fun textScreen(c: Canvas) {
+        val fresh = app.textFresh()
+        val shown = app.textValue.toString() + if (fresh) "" else "_"
+        val rows = max(1, (shown.length + TEXT_COLUMNS - 1) / TEXT_COLUMNS)
+        val first = max(0, rows - TEXT_ROWS)
+        for (row in first until rows) {
+            val y = 96f + (row - first) * TEXT_PITCH
+            val line = shown.substring(min(shown.length, row * TEXT_COLUMNS), min(shown.length, (row + 1) * TEXT_COLUMNS))
+            if (fresh) rect(c, LCD_LEFT - 2, y - 13, LCD_LEFT + 2 + measure(line, mono, TEXT_SIZE), y + 4, 1f, LCD)
+            text(c, line, LCD_LEFT, y, TEXT_SIZE, if (fresh) LCD_DARK else LCD, mono)
+        }
+        text(c, "SELECT: DONE  RETURN: CANCEL", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
     }
 
     private fun colorPicker(c: Canvas) {
@@ -1246,19 +1355,23 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         rightText(c, if (track.mute) "MUTED" else "SAMPLE SLICE", LCD_RIGHT, LCD_TITLE_Y, LCD_SMALL_TEXT, if (track.mute) ORANGE else LCD, mono)
         val span = app.timelineSpan().toInt()
         val from = app.homeTimelineStart()
+        val grow = settle((SystemClock.uptimeMillis() - revealStart) / REVEAL_MILLIS.toFloat())
+        c.save(); c.scale(1f, max(0.001f, grow), 0f, 144f)
         wave(c, from, from + span, track.start, track.end, 109f, 179f)
+        c.restore()
         text(c, MainActivity.seconds(track.start.toLong()) + " → " + MainActivity.seconds(track.end.toLong()) + " s", LCD_LEFT, LCD_HINT_Y, LCD_TITLE_TEXT, LCD, mono)
     }
 
-    private fun menu(c: Canvas, items: Array<String>, accent: Int = LCD, groups: IntArray? = null) {
+    private fun menu(c: Canvas, items: Array<String>, accent: Int = LCD, groups: IntArray? = null, enabled: ((Int) -> Boolean)? = null) {
         val first = max(0, min(app.selection - MENU_ROWS / 2, items.size - MENU_ROWS))
         for (i in first until min(items.size, first + MENU_ROWS)) {
             val y = MENU_TOP + (i - first) * MENU_PITCH
             val selected = i == app.selection
+            val rowAccent = if (enabled?.invoke(i) == false) MENU_DISABLED else accent
             val left = if (groups != null) STACK_LEFT else 34f
             val right = if (groups != null) STACK_LEFT + STACK_WIDTH else 366f
-            if (selected) rect(c, left, y - 13, right, y + 4, if (groups != null) STACK_RADIUS else 1f, accent)
-            text(c, (if (selected) "> " else "  ") + items[i], left + 5, y, 13f, if (selected) LCD_DARK else accent, if (selected) monoBold else mono)
+            if (selected) rect(c, left, y - 13, right, y + 4, if (groups != null) STACK_RADIUS else 1f, rowAccent)
+            text(c, (if (selected) "> " else "  ") + items[i], left + 5, y, 13f, if (selected) LCD_DARK else rowAccent, if (selected) monoBold else mono)
             if (groups != null && i < groups.size) effectIcon(c, groups[i], right - STACK_CELL / 2, y - 4.5f, if (selected) LCD_DARK else EFFECT_COLORS[groups[i]], 0.75f)
         }
     }
@@ -1459,8 +1572,16 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 stroke(c, x, y, s, false, -4f, 3f, 0f, 7f, 4f, 3f)
             }
             Sequencer.Effects.AUTOTUNE -> stroke(c, x, y, s, false, -7f, 6f, -3f, 6f, -3f, 2f, 1f, 2f, 1f, -2f, 5f, -2f, 5f, -6f, 7f, -6f)
+            Sequencer.Effects.ROBOT -> {
+                stroke(c, x, y, s, true, -7f, -5f, 7f, -5f, 7f, 6f, -7f, 6f)
+                stroke(c, x, y, s, false, -3f, -1f, -2f, -1f)
+                stroke(c, x, y, s, false, 2f, -1f, 3f, -1f)
+                stroke(c, x, y, s, false, -3f, 3f, 3f, 3f)
+                stroke(c, x, y, s, false, 0f, -5f, 0f, -8f)
+            }
             Sequencer.Effects.HIGH_PASS -> stroke(c, x, y, s, false, -7f, 6f, 0f, -4f, 8f, -4f)
             Sequencer.Effects.LOW_PASS -> stroke(c, x, y, s, false, -8f, -4f, 0f, -4f, 7f, 6f)
+            Sequencer.Effects.BAND_PASS -> stroke(c, x, y, s, false, -8f, 6f, -3f, -4f, 3f, -4f, 8f, 6f)
             Sequencer.Effects.DELAY -> {
                 stroke(c, x, y, s, false, -6f, -6f, -6f, 6f)
                 stroke(c, x, y, s, false, -1f, -4f, -1f, 4f)
@@ -1503,7 +1624,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private fun value(c: Canvas, title: String, value: String, unit: String, accent: Int = LCD) {
         text(c, title, LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, accent, mono)
         var size = if (value.length > LONG_VALUE_CHARS) LONG_VALUE_TEXT else VALUE_TEXT
-        if (app.mode == Mode.FX_VALUE && hasVisual(app.effectParameter)) {
+        if (app.mode == Mode.FX_VALUE && hasVisual(app.effectParameter) || app.mode == Mode.SYNTH) {
             paint.typeface = monoBold; paint.textSize = size
             val room = VISUAL_LEFT - LCD_LEFT - 10
             val width = paint.measureText(value)
@@ -1524,9 +1645,13 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val faint = tint(accent, LCD_DARK, 0.65f)
         paint.strokeCap = Paint.Cap.ROUND
         when (parameter) {
-            MainActivity.FX_HIGH_PASS, MainActivity.FX_LOW_PASS -> {
-                val high = parameter == MainActivity.FX_HIGH_PASS
-                val cutoff = if (high) fx.highPass else fx.lowPass
+            MainActivity.FX_HIGH_PASS, MainActivity.FX_LOW_PASS, MainActivity.FX_BAND_PASS,
+            MainActivity.FX_HIGH_RESONANCE, MainActivity.FX_LOW_RESONANCE, MainActivity.FX_BAND_RESONANCE -> {
+                val high = parameter == MainActivity.FX_HIGH_PASS || parameter == MainActivity.FX_HIGH_RESONANCE
+                val band = parameter == MainActivity.FX_BAND_PASS || parameter == MainActivity.FX_BAND_RESONANCE
+                val cutoff = if (high) fx.highPass else if (band) fx.bandPass else fx.lowPass
+                val resonance = if (high) fx.highResonance else if (band) fx.bandResonance else fx.lowResonance
+                val quality = TrackEffects.resonanceQ(resonance).toFloat()
                 for (decade in intArrayOf(100, 1000, 10000)) {
                     val x = l + w * (ln(decade / 20f) / ln(1000f))
                     line(c, x, t, x, b, faint, 1f)
@@ -1534,8 +1659,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 curve(c, accent, true) { u ->
                     if (cutoff <= 0) 1f else {
                         val ratio = 20f * 1000f.pow(u) / cutoff
-                        val gain = if (high) ratio / sqrt(1 + ratio * ratio) else 1 / sqrt(1 + ratio * ratio)
-                        1 + 20 * log10(max(gain, 1e-4f)) / VISUAL_DB
+                        val gain = if (resonance == 0 && !band) {
+                            if (high) ratio / sqrt(1 + ratio * ratio) else 1 / sqrt(1 + ratio * ratio)
+                        } else {
+                            val slope = 1 - ratio * ratio
+                            val damping = ratio / quality
+                            val denominator = sqrt(slope * slope + damping * damping)
+                            (if (high) ratio * ratio else if (band) ratio else 1f) / denominator
+                        }
+                        0.8f + 20 * log10(max(gain, 1e-4f)) / VISUAL_DB
                     }
                 }
                 if (cutoff > 0) {
@@ -1559,7 +1691,19 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     line(c, x, b, x, b - h * level, accent, 3f)
                 }
             }
-            MainActivity.FX_DISTORTION, MainActivity.FX_DISTORTION_MIX -> {
+            MainActivity.FX_CRUSH_RATE -> {
+                line(c, l, (t + b) / 2, r, (t + b) / 2, faint, 1f)
+                val frames = Tape.RATE * VISUAL_CRUSH_CYCLES / VISUAL_CRUSH_HZ
+                val interval = Tape.RATE / fx.crushRate.toFloat()
+                curve(c, accent, false) { u ->
+                    val position = u * frames
+                    val held = kotlin.math.floor(position / interval) * interval
+                    val dry = sin(2 * PI * position * VISUAL_CRUSH_HZ / Tape.RATE).toFloat()
+                    val wet = TrackEffects.crushed(sin(2 * PI * held * VISUAL_CRUSH_HZ / Tape.RATE).toFloat(), fx.crushBits)
+                    0.5f + VISUAL_CRUSH_HEIGHT * (dry + (wet - dry) * fx.distortionMix / 100f)
+                }
+            }
+            MainActivity.FX_DISTORTION, MainActivity.FX_DISTORTION_MIX, MainActivity.FX_DRIVE, MainActivity.FX_CRUSH_BITS -> {
                 val cx = l + w / 2; val cy = (t + b) / 2; val half = min(w, h) / 2
                 line(c, cx - half, cy, cx + half, cy, faint, 1f)
                 line(c, cx, t, cx, b, faint, 1f)
@@ -1569,7 +1713,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 val path = Path()
                 for (i in 0..VISUAL_POINTS) {
                     val x = -1 + 2f * i / VISUAL_POINTS
-                    val y = (x + (TrackEffects.shape(x, type, fx.drive) - x) * mix).coerceIn(-1f, 1f)
+                    val shaped = if (type == TrackEffects.BITCRUSH) TrackEffects.crushed(x, fx.crushBits) else TrackEffects.shape(x, type, fx.drive)
+                    val y = (x + (shaped - x) * mix).coerceIn(-1f, 1f)
                     val px = cx + x * half; val py = cy - y * half
                     if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
@@ -1621,12 +1766,17 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 for (i in 0..VISUAL_POINTS) {
                     val u = i / VISUAL_POINTS.toFloat()
                     val sang = sung(u)
-                    out += (Math.round(sang) - out) * follow
+                    out += ((Math.round(sang).toFloat()) - out) * follow
                     val y = sang + (out - sang) * fx.autoStrength / 100f * fx.autoMix / 100f
                     val px = l + w * u; val py = b - h * (y / 3f).coerceIn(0f, 1f)
                     if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
                 stroke(c, path, accent, 2f)
+            }
+            MainActivity.FX_ROBOT_PROFILE, MainActivity.FX_ROBOT_MORPH, MainActivity.FX_ROBOT_MIX -> {
+                val cycles = 4 + fx.robotProfile
+                curve(c, faint, false) { u -> 0.5f + 0.35f * sin(u * 4 * PI.toFloat()) }
+                curve(c, accent, false) { u -> 0.5f + 0.35f * (if (sin(u * cycles * 2 * PI.toFloat()) > 0) 1f else -1f) }
             }
             MainActivity.FX_WOBBLE_RATE, MainActivity.FX_WOBBLE_DEPTH -> {
                 val hertz = fx.wobbleRate / MainActivity.WOBBLE_RATE_PER_HZ
@@ -1663,6 +1813,41 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             }
         }
         paint.strokeCap = Paint.Cap.BUTT; paint.style = Paint.Style.FILL
+    }
+
+    private fun synthVisual(c: Canvas, parameter: Int) {
+        val synth = app.synth
+        val faint = tint(LCD, LCD_DARK, 0.65f)
+        val middle = (VISUAL_TOP + VISUAL_BOTTOM) / 2
+        paint.strokeCap = Paint.Cap.ROUND
+        when (parameter) {
+            ToneSynth.WAVE, ToneSynth.NOTE -> {
+                line(c, VISUAL_LEFT, middle, VISUAL_RIGHT, middle, faint, 1f)
+                val cycles = if (parameter == ToneSynth.WAVE) 2.0 else 1 + 7.0 * (synth[ToneSynth.NOTE] - ToneSynth.MINIMUM[ToneSynth.NOTE]) / (ToneSynth.MAXIMUM[ToneSynth.NOTE] - ToneSynth.MINIMUM[ToneSynth.NOTE])
+                val noise = java.util.Random(7)
+                curve(c, LCD, false) { u ->
+                    val value = if (synth[ToneSynth.WAVE] == ToneSynth.NOISE) noise.nextFloat() * 2 - 1.0 else ToneSynth.wave(synth[ToneSynth.WAVE], (u * cycles) % 1)
+                    0.5f + 0.42f * value.toFloat()
+                }
+            }
+            ToneSynth.SWEEP -> {
+                line(c, VISUAL_LEFT, middle, VISUAL_RIGHT, middle, faint, 1f)
+                curve(c, LCD, false) { u -> 0.5f + 0.45f * synth[ToneSynth.SWEEP] / ToneSynth.MAXIMUM[ToneSynth.SWEEP] * (1 - u) * (1 - u) }
+            }
+            else -> {
+                val length = synth[ToneSynth.LENGTH].toFloat()
+                val span = if (parameter == ToneSynth.LENGTH) sqrt(length / ToneSynth.MAXIMUM[ToneSynth.LENGTH]) else 1f
+                val attack = min(1f, synth[ToneSynth.ATTACK] / length)
+                val release = min(1f, synth[ToneSynth.RELEASE] / length)
+                val end = VISUAL_LEFT + (VISUAL_RIGHT - VISUAL_LEFT) * span
+                line(c, end, VISUAL_TOP, end, VISUAL_BOTTOM, faint, 1f)
+                curve(c, LCD, true) { u ->
+                    val t = u / span
+                    if (t > 1) 0f else 0.9f * minOf(1f, if (attack > 0) t / attack else 1f, if (release > 0) (1 - t) / release else 1f)
+                }
+            }
+        }
+        paint.strokeCap = Paint.Cap.BUTT
     }
 
     private fun curve(c: Canvas, color: Int, fill: Boolean, y: (Float) -> Float) {
@@ -1735,23 +1920,29 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         rightText(c, (if (app.fine) "FINE " else "STEP ") + app.timelineIncrement() * 1000 / Tape.RATE + " ms", LCD_RIGHT, 187f, LCD_SMALL_TEXT, LCD, mono)
     }
 
-    private fun shifting() = app.mode == Mode.FX_VALUE && (app.effectParameter == MainActivity.FX_TRIM_START || app.effectParameter == MainActivity.FX_TRIM_END)
-
     private fun shiftTimeline(c: Canvas, accent: Int) {
         val track = app.sequencer.tracks[app.track]
         val controls = app.effectControls()
         val a = Sequencer.sliceStart(track, controls)
         val b = Sequencer.sliceEnd(track, controls)
-        val margin = MainActivity.MAX_SHIFT_MS * (Tape.RATE / 1000)
-        val from = max(0, track.start - margin)
-        val to = min(Tape.LENGTH, track.end + margin)
+        val window = app.shiftWindow()
+        val from = window[0]
+        val to = window[1]
         text(c, MainActivity.FX_LABELS[app.effectParameter], LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, accent, mono)
         wave(c, from, to, a, b, 104f, 152f)
-        val window = (to - from).toFloat()
         for (edge in intArrayOf(track.start, track.end)) {
-            val x = WAVE_LEFT + WAVE_WIDTH * (edge - from) / window
+            if (edge < from || edge > to) continue
+            val x = WAVE_LEFT + WAVE_WIDTH * (edge - from) / (to - from).toFloat()
             var y = 104f
             while (y < 152f) { line(c, x, y, x, min(152f, y + 3), tint(accent, LCD_DARK, 0.4f), 1f); y += 6 }
+        }
+        val edge = if (app.effectParameter == MainActivity.FX_TRIM_START) track.start else track.end
+        val reach = MainActivity.MAX_SHIFT_MS * (Tape.RATE / 1000)
+        for (cap in intArrayOf(edge - reach, edge + reach)) {
+            if (cap < from || cap > to) continue
+            val x = WAVE_LEFT + WAVE_WIDTH * (cap - from) / (to - from).toFloat()
+            var y = 104f
+            while (y < 152f) { line(c, x, y, x, min(152f, y + 4), SHIFT_LIMIT, 1.4f); y += 7 }
         }
         text(c, app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), LCD_LEFT, 186f, 20f, accent, monoBold)
         rightText(c, MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_RIGHT, 186f, LCD_SMALL_TEXT, accent, mono)
@@ -1808,7 +1999,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val x2 = left + width * (b - windowStart) / window
         c.save()
         c.clipRect(left - 3, top, left + width + 3, bottom)
-        if (app.mode == Mode.HOME || app.isTimelineMode() || shifting()) {
+        if (app.mode == Mode.HOME || app.isTimelineMode() || app.shifting()) {
             val selectionLeft = max(left, x1)
             val selectionRight = min(left + width, x2)
             if (selectionRight > selectionLeft) rect(c, selectionLeft, top, selectionRight, bottom, 0f,
@@ -1837,7 +2028,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             c.restore()
         }
         if (app.isTimelineMode()) selectionEdges(c, x1, x2, top, bottom, app.mode != Mode.END && app.mode != Mode.RECORDING)
-        if (shifting()) selectionEdges(c, x1, x2, top, bottom, app.effectParameter == MainActivity.FX_TRIM_START)
+        if (app.shifting()) selectionEdges(c, x1, x2, top, bottom, app.effectParameter == MainActivity.FX_TRIM_START)
         c.restore()
         text(c, axisTime(windowStart.toLong(), (windowEnd - windowStart).toLong()), left, bottom + 10, 7f, 0xff8e9e7c.toInt(), mono)
         rightText(c, axisTime(windowEnd.toLong(), (windowEnd - windowStart).toLong()), left + width, bottom + 10, 7f, 0xff8e9e7c.toInt(), mono)
@@ -1869,23 +2060,28 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val held = app.effectHeld >= 0
         val label = 0xffd3d7c7.toInt()
         val dim = 0xff6d7066.toInt()
-        val confirming = app.mode == Mode.PAGE_PASTE || app.mode == Mode.PAGE_RESET
+        val pages = app.pageMenu()
+        val typing = app.mode == Mode.TEXT
         if (!zoomHolding) {
             val center = when {
                 app.mode == Mode.HOME -> "MENU"
                 recordingScreen -> "RECORD"
                 ordering -> if (held) "DROP" else if (selectedMovable()) "MOVE" else "LOCKED"
-                confirming -> "CONFIRM"
-                app.mode == Mode.PAGE_COPIED -> ""
+                pages -> if (app.pageClipboard != null) "PASTE" else "OPEN"
+                typing -> "DONE"
                 else -> "SELECT"
             }
             centeredText(c, center, WHEEL_X, WHEEL_Y, 16f, INK, monoBold)
-            if (app.mode != Mode.HOME) centeredText(c, if (confirming) "CANCEL" else "RETURN", WHEEL_X, WHEEL_Y - WHEEL_LABEL_OFFSET, WHEEL_LABEL_TEXT, label, monoBold)
+            if (app.mode != Mode.HOME && !(app.noTape && app.mode == Mode.PROJECTS)) centeredText(c, if (app.pageCancels()) "CANCEL" else "RETURN", WHEEL_X, WHEEL_Y - WHEEL_LABEL_OFFSET, WHEEL_LABEL_TEXT, label, monoBold)
             if (app.canOpenPages()) centeredText(c, "PAGES", WHEEL_X, WHEEL_Y + WHEEL_LABEL_OFFSET, WHEEL_LABEL_TEXT, label, monoBold)
-            if (stackPage) centeredText(c, "ORDER", WHEEL_X, WHEEL_Y + WHEEL_LABEL_OFFSET, WHEEL_LABEL_TEXT, if (app.effectStack().isNotEmpty()) label else dim, monoBold)
+            if (stackPage) centeredText(c, "OPTIONS", WHEEL_X, WHEEL_Y + WHEEL_LABEL_OFFSET, WHEEL_LABEL_TEXT, label, monoBold)
         }
         when {
             zoomHolding -> zoomWheelOverlay(c)
+            pages -> {
+                centeredText(c, "COPY", WHEEL_X - WHEEL_LABEL_OFFSET, WHEEL_Y, WHEEL_LABEL_TEXT, label, monoBold)
+                centeredText(c, "MOVE", WHEEL_X + WHEEL_LABEL_OFFSET, WHEEL_Y, WHEEL_LABEL_TEXT, if (app.pageClipboard == null) label else dim, monoBold)
+            }
             stackPage -> {
                 centeredText(c, "DELETE", WHEEL_X - WHEEL_LABEL_OFFSET, WHEEL_Y, WHEEL_LABEL_TEXT, if (app.selection < app.effectStack().size) label else dim, monoBold)
                 centeredText(c, "UNDO", WHEEL_X + WHEEL_LABEL_OFFSET, WHEEL_Y, WHEEL_LABEL_TEXT, if (app.canUndoEffect()) label else dim, monoBold)
@@ -2046,7 +2242,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     private fun pads(c: Canvas) {
         val bits: Int
-        synchronized(app.sequencer) { bits = app.sequencer.tracks[app.track].steps }
+        synchronized(app.sequencer) { bits = if (app.noTape) 0 else app.sequencer.tracks[app.track].steps }
         val pages = app.pageMenu()
         val playhead = if (app.sequencer.playingPage() == app.sequencer.selectedPage()) app.sequencer.step() else -1
         for (i in 0 until Sequencer.STEPS) {
@@ -2054,17 +2250,23 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             val y = PAD_TOP + (i / PAD_COLUMNS) * PAD_PITCH
             val page = app.sequencer.page(if (pages) i else app.sequencer.selectedPage())
             val on = if (pages) page.enabled else bits and (1 shl i) != 0
-            val playing = !pages && i == playhead
+            val playing = if (pages) app.sequencer.isPlaying() && i == app.sequencer.playingPage() else i == playhead
             val editing = !pages && app.editingStep(i)
-            val base = page.color
-            val top = tint(base, WHITE, if (editing) 0.40f else if (on) 0.22f else 0.10f)
-            val bottom = if (editing) tint(base, WHITE, 0.22f) else if (on) base else tint(base, BLACK, 0.08f)
             val depression = if (pressed == i) PRESS_DEPTH else 0f
-            raisedButton(c, x, y, PAD_WIDTH, PAD_HEIGHT, base, top, bottom, depression)
-            val marked = pages && (i == app.swapSource || i == app.pasteTarget || app.pageCopying() && i == app.pageClipboardSource)
+            var base = page.color
+            val elapsed = SystemClock.uptimeMillis() - transitionStart
+            val target = transitionTarget
+            if (pages && target >= 0) {
+                val dx = (i % PAD_COLUMNS - target % PAD_COLUMNS) * PAD_COLUMN_PITCH
+                val dy = (i / PAD_COLUMNS - target / PAD_COLUMNS) * PAD_PITCH
+                if (hypot(dx, dy) <= SPREAD_RADIUS * ease(elapsed / SPREAD_MILLIS.toFloat())) base = app.sequencer.page(target).color
+            }
+            raisedButton(c, x, y, PAD_WIDTH, PAD_HEIGHT, base, tint(base, WHITE, if (editing) 0.40f else if (on) 0.22f else 0.10f),
+                if (editing) tint(base, WHITE, 0.22f) else if (on) base else tint(base, BLACK, 0.08f), depression)
+            val marked = pages && (i == app.pageCursor || i == app.moveSource)
             if (playing && on || marked || i == 0 && blinkLit(SystemClock.uptimeMillis())) padGlow(c, x, y + depression, base)
             text(c, String.format(Locale.US, "%02d", i + 1), x + 12, y + 37 + depression, 26f, INK, bold)
-            val custom = !pages && app.sequencer.tracks[app.track].padEffects[i] != null
+            val custom = !pages && on && app.sequencer.tracks[app.track].padEffects[i] != null
             val bar = when {
                 playing -> 0xfff6ffd2.toInt()
                 custom -> 0xff8ad9ec.toInt()
@@ -2216,7 +2418,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     app.wheelTurned(delta.toDouble())
                     angle = next
                     if (abs(accumulated) > WHEEL_DEAD_ZONE) wheelMoved = true
-                    val step = WHEEL_STEP * 100 / app.wheelSensitivity
+                    val step = WHEEL_STEP * 100 / (app.wheelSensitivity * cassetteSlowdown())
                     val ticks = (accumulated / step).toInt()
                     if (ticks != 0) {
                         wheelMoved = true
@@ -2248,6 +2450,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                         pressedPlay && playAt(x, y) -> app.wheelPlay()
                         pressedTrack >= 0 && trackAt(px, py) == pressedTrack -> app.selectTrack(pressedTrack)
                         radius <= WHEEL_SELECT_RADIUS + TOUCH_SLOP_INNER -> app.center()
+                        app.mode == Mode.TEXT && py < SCREEN_BOTTOM + TOP_SHIFT && px > SCREEN_LEFT && px < SCREEN_RIGHT -> app.showKeyboard()
                         py >= FINE_TOUCH_TOP + TOP_SHIFT && py < SCREEN_BOTTOM + TOP_SHIFT && px > SCREEN_LEFT && px < SCREEN_RIGHT -> app.toggleFine()
                     }
                     performClick()
@@ -2261,11 +2464,32 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     override fun performClick(): Boolean { super.performClick(); return true }
 
+    private fun cassetteSlowdown() = if (app.mode == Mode.PROJECT_OPEN || app.mode == Mode.PROJECT_EDIT || app.mode == Mode.PROJECT_COLOR) CASSETTE_WHEEL else 1f
+
+    override fun onCheckIsTextEditor() = app.mode == Mode.TEXT
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        if (app.mode != Mode.TEXT) return null
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        outAttrs.initialSelStart = Selection.getSelectionStart(app.textValue)
+        outAttrs.initialSelEnd = Selection.getSelectionEnd(app.textValue)
+        return object : BaseInputConnection(this, true) {
+            override fun getEditable(): Editable = app.textValue
+            override fun commitText(text: CharSequence?, position: Int) = super.commitText(text, position).also { app.textChanged() }
+            override fun setComposingText(text: CharSequence?, position: Int) = super.setComposingText(text, position).also { app.textChanged() }
+            override fun finishComposingText() = super.finishComposingText().also { app.textChanged() }
+            override fun deleteSurroundingText(before: Int, after: Int) = super.deleteSurroundingText(before, after).also { app.textChanged() }
+            override fun setSelection(start: Int, end: Int) = super.setSelection(start, end).also { app.textChanged() }
+            override fun performEditorAction(action: Int): Boolean { app.finishText(); return true }
+        }
+    }
+
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_SCROLL) {
             val scroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
             if (scroll != 0f) {
-                mouseAccumulated -= scroll * SCROLL_TICKS_PER_NOTCH * app.wheelSensitivity / 100
+                mouseAccumulated -= scroll * SCROLL_TICKS_PER_NOTCH * app.wheelSensitivity * cassetteSlowdown() / 100
                 val ticks = mouseAccumulated.toInt()
                 if (ticks != 0) {
                     app.wheelTurned((ticks * WHEEL_STEP).toDouble())
@@ -2285,7 +2509,21 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_SPACE || keyCode == KeyEvent.KEYCODE_ESCAPE) app.showBack()
             return true
         }
-        val sideKeys = app.mode == Mode.HOME || app.isTimelineMode() || app.effectSideKeys()
+        if (app.mode == Mode.TEXT) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_DEL -> app.textBackspace()
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> app.finishText()
+                KeyEvent.KEYCODE_ESCAPE -> app.cancel()
+                else -> {
+                    val typed = event.unicodeChar
+                    if (typed == 0 || keyCode == KeyEvent.KEYCODE_BACK) return super.onKeyDown(keyCode, event)
+                    app.typeChar(typed.toChar())
+                }
+            }
+            invalidate()
+            return true
+        }
+        val sideKeys = app.mode == Mode.HOME || app.pageMenu() || app.isTimelineMode() || app.effectSideKeys()
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> if (!zoomHolding) app.wheel(-1)
             KeyEvent.KEYCODE_DPAD_DOWN -> if (!zoomHolding) { if (app.mode == Mode.HOME) app.wheelPages() else app.wheel(1) }
@@ -2443,8 +2681,26 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private val LCD = Color.rgb(190, 211, 148)
         private const val LCD_DARK = 0xff101a16.toInt()
         private const val LCD_DIM = 0xff4d5a45.toInt()
-        private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060).map { it.toInt() }.toIntArray()
+        private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060, 0xff85e5c4, 0xff70c9c6).map { it.toInt() }.toIntArray()
         private const val STACK_ROWS = 4
+        private const val SHELF_SPACING = 330f
+        private const val SHELF_SPEED = 12f
+        private const val SHELF_ENTRY = 1.3f
+        private const val FLATTEN_MILLIS = 200L
+        private const val REVEAL_MILLIS = 150L
+        private const val CASSETTE_WHEEL = 0.7f
+        private const val SHIFT_LIMIT = 0xfff0d050.toInt()
+        private const val SPREAD_MILLIS = 650L
+        private const val OPEN_HOLD_MILLIS = 120L
+        private const val SPREAD_RADIUS = 345f
+        private const val PAGE_CHIP_W = 58f
+        private const val PAGE_CHIP_H = 40f
+        private const val PAGE_CHIP_Y = 144f
+        private const val PAGE_PAIR_GAP = 62f
+        private const val TEXT_COLUMNS = 38
+        private const val TEXT_SIZE = 14f
+        private const val TEXT_PITCH = 18f
+        private const val TEXT_ROWS = 6
         private val TRANS_STRIPES = longArrayOf(0xff5bcefa, 0xfff5a9b8, 0xffffffff, 0xfff5a9b8, 0xff5bcefa).map { it.toInt() }.toIntArray()
         private val PRIDE_STRIPES = longArrayOf(0xffec5b5b, 0xffffae58, 0xfffff070, 0xff5cae72, 0xff6890e6, 0xffa064b0).map { it.toInt() }.toIntArray()
         private const val GLOW_RADIUS = 48f
@@ -2482,7 +2738,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val CLOSE_END = 1600L
         private const val CAROUSEL_MILLIS = 320L
         private const val FLIP_MILLIS = 800L
-        private const val COPIED_MILLIS = 1500L
         private const val BLINK_MILLIS = 170L
         private val SCREW_ANGLES = floatArrayOf(-14f, 11f, 24f, -26f)
         private val SLICE_WAVEFORM = floatArrayOf(3f, 7f, 10f, 5f, 9f, 6f, 2f)
@@ -2532,11 +2787,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val VISUAL_TOP = 110f
         private const val VISUAL_BOTTOM = 166f
         private const val VISUAL_POINTS = 64
+        private const val VISUAL_CRUSH_HZ = 440f
+        private const val VISUAL_CRUSH_CYCLES = 2
+        private const val VISUAL_CRUSH_HEIGHT = 0.45f
         private const val VISUAL_DB = 30f
         private const val VISUAL_AUTOTUNE_MS = 900f
         private const val FOOTER_GLYPH_RISE = 4f
         private const val PULSE_MILLIS = 1800
         private const val MENU_ROWS = 7
+        private const val MENU_DISABLED = 0xff70766d.toInt()
         private const val MENU_TOP = 93f
         private const val MENU_PITCH = 20
         private const val SPLIT_PAUSE = 0.35f
@@ -2593,6 +2852,16 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private fun softSpring(t: Float): Float = 1 - (Math.exp(-6.0 * t) * cos(5.5 * t)).toFloat()
 
         private fun spring(t: Float): Float = 1 - (Math.exp(-7.0 * t) * cos(8.5 * t)).toFloat()
+
+        private fun smoother(t: Float): Float {
+            val v = max(0f, min(1f, t))
+            return v * v * v * (v * (v * 6 - 15) + 10)
+        }
+
+        private fun settle(t: Float): Float {
+            val v = 1 - max(0f, min(1f, t))
+            return 1 - v * v * v
+        }
 
         private fun ease(t: Float): Float {
             val v = max(0f, min(1f, t))

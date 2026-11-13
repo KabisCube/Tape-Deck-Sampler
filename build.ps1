@@ -41,6 +41,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$env:JAVA_HOME\bin\java.exe" -cp $cp com.tapedecksampler.app.PitchCorrectorTest
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& "$env:JAVA_HOME\bin\java.exe" -Xmx96m -cp $cp com.tapedecksampler.app.RobotEffectTest
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$env:JAVA_HOME\bin\java.exe" -cp $cp com.tapedecksampler.app.TimelineWindowTest
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (-not $TestOnly) {

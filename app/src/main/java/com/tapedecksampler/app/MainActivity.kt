@@ -3,7 +3,6 @@ package com.tapedecksampler.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -26,15 +25,12 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.OpenableColumns
 import android.provider.Settings
-import android.text.Editable
-import android.text.InputFilter
-import android.text.InputType
-import android.text.TextWatcher
+import android.text.Selection
+import android.text.SpannableStringBuilder
 import android.view.View
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
@@ -52,7 +48,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 class MainActivity : Activity(), AudioEngine.Listener {
-    enum class Mode { HOME, PAGES, PAGE_COPIED, PAGE_PASTE, PAGE_RESET, MENU, ADD_SAMPLE, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_EDIT, PROJECT_EDIT_MENU, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
+    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_EDIT, PROJECT_EDIT_MENU, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
 
     fun interface Work { @Throws(Exception::class) fun run() }
 
@@ -71,47 +67,69 @@ class MainActivity : Activity(), AudioEngine.Listener {
     lateinit var instrument: InstrumentView
     @JvmField var track = 0
     @JvmField var selection = 0
-    @JvmField var copiedAt = 0L
     @JvmField var pageClipboard: Sequencer.Page? = null
-    @JvmField var swapSource = -1
-    @JvmField var pasteTarget = -1
-    @JvmField var pageAction = 0
     @JvmField var pageClipboardSource = -1
-    @JvmField var pagePrompt = false
-
-    fun pageMenu() = mode == Mode.PAGES || mode == Mode.PAGE_COPIED || mode == Mode.PAGE_PASTE || mode == Mode.PAGE_RESET
-
-    fun pagePromptText() = when (selection) {
-        0 -> "SELECT A PAGE TO COPY"
-        1 -> if (swapSource < 0) "SELECT A PAGE" else "SELECT SECOND PAGE"
-        else -> "SELECT A PAGE TO RESET"
+    @JvmField var pageCursor = 0
+    @JvmField var moveSource = -1
+    @JvmField var pageNote = PAGE_NOTE_NONE
+    @JvmField var pageNoteFrom = -1
+    @JvmField var pageNoteTo = -1
+    @JvmField var pageCopyActive = false
+    @JvmField var pastedColor = 0
+    private val pageNoteDone = Runnable {
+        if (pageNote == PAGE_NOTE_PASTED || pageNote == PAGE_NOTE_MOVED) { pageNote = PAGE_NOTE_NONE; instrument.invalidate() }
     }
 
-    fun pageCopying() = mode == Mode.PAGE_COPIED || mode == Mode.PAGE_PASTE
+    private fun showPageNote(note: Int, from: Int, to: Int) {
+        pageNote = note; pageNoteFrom = from; pageNoteTo = to
+        instrument.removeCallbacks(pageNoteDone)
+        instrument.postDelayed(pageNoteDone, PAGE_NOTE_MS)
+    }
+
+    fun pageMenu() = mode == Mode.PAGES
+    fun pageCancels() = mode == Mode.PAGES && (moveSource >= 0 || pageClipboard != null)
     fun canOpenPages() = !busy && mode == Mode.HOME
 
     fun wheelPages() {
+        if (busy || pageOpening >= 0) return
+        if (mode == Mode.PAGES) return
         if (effectStackPage()) {
-            val count = effectStack().size
-            if (count > 0) { mode = Mode.FX_REORDER; effectHeld = -1; selection = min(selection, count - 1); haptic(); instrument.invalidate() }
+            optionsRow = selection; mode = Mode.FX_OPTIONS; selection = 0
+            haptic(); instrument.invalidate()
             return
         }
         if (!canOpenPages()) return
         cancelLive()
-        mode = Mode.PAGES; selection = 0; pageAction = 0; swapSource = -1; pagePrompt = false
+        mode = Mode.PAGES; pageCursor = sequencer.selectedPage(); moveSource = -1; pageNote = PAGE_NOTE_NONE
         haptic(); instrument.invalidate()
     }
 
-    private fun applyPaste() {
-        pageClipboard?.let { sequencer.replacePage(pasteTarget, it) }
-        mode = Mode.PAGE_COPIED; selection = pageAction; pasteTarget = -1; copiedAt = 0
-        save(); preparePlayback()
+    private fun movePage() {
+        pageNote = PAGE_NOTE_NONE
+        if (moveSource < 0) moveSource = pageCursor
+        else if (moveSource == pageCursor) moveSource = -1
+        else {
+            sequencer.swapPages(moveSource, pageCursor)
+            showPageNote(PAGE_NOTE_MOVED, moveSource, pageCursor)
+            moveSource = -1
+            save()
+        }
+        haptic(); instrument.invalidate()
     }
 
-    private fun applyReset() {
-        sequencer.clearPage(pasteTarget)
-        mode = Mode.PAGES; selection = pageAction; pasteTarget = -1
-        save()
+    private fun copyPage() {
+        pageClipboard = sequencer.page(pageCursor).copy(); pageClipboardSource = pageCursor
+        moveSource = -1; pageNote = PAGE_NOTE_NONE; pageCopyActive = true
+        pageCursor = (pageCursor + 1) % Sequencer.PAGE_COUNT
+    }
+
+    private fun pastePage() {
+        val clipboard = pageClipboard ?: return
+        moveSource = -1
+        sequencer.replacePage(pageCursor, clipboard)
+        pageClipboard = null; pastedColor = clipboard.color; pageCopyActive = false
+        showPageNote(PAGE_NOTE_PASTED, pageClipboardSource, pageCursor)
+        save(); preparePlayback()
     }
 
     fun togglePage(index: Int) {
@@ -121,20 +139,96 @@ class MainActivity : Activity(), AudioEngine.Listener {
         save(); haptic()
     }
 
+    @JvmField var pageOpening = -1
+
     private fun pagePad(index: Int) {
-        val action = if (pagePrompt) selection else -1
-        pagePrompt = pagePrompt && action == 1 && swapSource < 0
-        when (action) {
-            -1 -> { sequencer.selectPage(index); mode = Mode.HOME; stepTarget = -1 }
-            0 -> {
-                pageClipboard = sequencer.page(index).copy(); pageClipboardSource = index
-                mode = Mode.PAGE_COPIED; copiedAt = SystemClock.uptimeMillis()
-            }
-            1 -> if (swapSource < 0) swapSource = index else { sequencer.swapPages(swapSource, index); swapSource = -1 }
-            2 -> { pasteTarget = index; mode = Mode.PAGE_RESET }
+        if (pageOpening >= 0) return
+        val page = sequencer.page(index)
+        pageOpening = index; pageCursor = index; moveSource = -1; pageNote = PAGE_NOTE_NONE
+        if (!page.enabled) { page.enabled = true; save() }
+        instrument.pageTransition(index)
+    }
+
+    fun finishPageOpen() {
+        val target = pageOpening
+        pageOpening = -1
+        if (mode == Mode.PAGES && target >= 0) openPage(target)
+        instrument.invalidate()
+    }
+
+    private fun openPage(index: Int) {
+        sequencer.selectPage(index); mode = Mode.HOME; stepTarget = -1
+        save(); preparePlayback()
+    }
+
+    @JvmField var textTitle = ""
+    @JvmField val textValue = SpannableStringBuilder()
+    private var textLimit = 0
+    private var textDone: ((String) -> Unit)? = null
+    private var textReturnMode = Mode.HOME
+    private var textReturnSelection = 0
+
+    fun textEntry(title: String, initial: String, limit: Int, names: Boolean, done: (String) -> Unit) {
+        textReturnMode = mode; textReturnSelection = selection
+        textTitle = title; textLimit = limit; textDone = done
+        textValue.clear(); textValue.clearSpans(); textValue.append(initial.take(limit))
+        Selection.setSelection(textValue, if (names) 0 else textValue.length, textValue.length)
+        mode = Mode.TEXT
+        showKeyboard()
+        instrument.invalidate()
+    }
+
+    fun textFresh() = textValue.isNotEmpty() && Selection.getSelectionStart(textValue) != Selection.getSelectionEnd(textValue)
+
+    fun showKeyboard() {
+        if (mode != Mode.TEXT) return
+        instrument.requestFocus()
+        val keyboard = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        keyboard.restartInput(instrument)
+        instrument.post { keyboard.showSoftInput(instrument, InputMethodManager.SHOW_IMPLICIT) }
+    }
+
+    private fun hideKeyboard() {
+        if (ready) (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(instrument.windowToken, 0)
+    }
+
+    private fun editSelection(replacement: String) {
+        var from = max(0, Selection.getSelectionStart(textValue))
+        val to = max(0, Selection.getSelectionEnd(textValue))
+        if (from == to && replacement.isEmpty()) from = max(0, from - 1)
+        textValue.replace(min(from, to), max(from, to), replacement)
+        textChanged()
+        if (ready) {
+            val cursor = Selection.getSelectionEnd(textValue)
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).updateSelection(instrument, cursor, cursor, -1, -1)
         }
-        save()
-        if (mode == Mode.HOME) preparePlayback()
+    }
+
+    fun typeChar(value: Char) {
+        if (mode != Mode.TEXT || value.code < 32) return
+        editSelection(value.toString())
+    }
+
+    fun textBackspace() {
+        if (mode != Mode.TEXT) return
+        editSelection("")
+    }
+
+    fun textChanged() {
+        if (textValue.length > textLimit) textValue.delete(textLimit, textValue.length)
+        if (ready) instrument.invalidate()
+    }
+
+    fun finishText() {
+        if (mode != Mode.TEXT) return
+        val value = textValue.toString().trim()
+        if (value.isEmpty()) return
+        val done = textDone
+        textDone = null
+        hideKeyboard()
+        mode = textReturnMode; selection = textReturnSelection
+        done?.invoke(value)
+        if (ready) instrument.invalidate()
     }
 
     @JvmField var start = 0
@@ -146,9 +240,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
     @JvmField var fine = false
     @JvmField var zoom = true
     private var zoomFrames = DEFAULT_TIMELINE_FRAMES.toLong()
+    private var shiftZoomFrames = 0L
     private var autoHomeZoom = true
     private var homeWindowStart = 0L
     @JvmField var busy = false
+    @JvmField var quietWork = false
+    @JvmField var noTape = false
     @JvmField var effectParameter = 0
     @JvmField var effectGroup = -1
     @JvmField var effectHeld = -1
@@ -156,6 +253,11 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private var effectDirect = false
     private val deletedEffects = ArrayList<DeletedEffect>()
     private var effectReturnSelection = 0
+    private var optionsRow = 0
+    private var addSnapshot: Sequencer.Effects? = null
+    private var addHadOverride = false
+    private var effectClipboard: Sequencer.Effects? = null
+    private var effectClipboardGroups = IntArray(0)
     @JvmField var effectValue = 0
     private var effectSnapshot: Sequencer.Effects? = null
     private var effectHadOverride = false
@@ -203,9 +305,20 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private var clapGeneration = 0
     @JvmField var clapStatus = ""
     private var wheelBefore = 0
-    @JvmField var newSessionDialog: AlertDialog? = null
     @JvmField var message = "READY / ${Tape.SECONDS} SECOND SAMPLE TAPE"
     @JvmField var importName = ""
+    private var speechFile: File? = null
+    private var speechText = ""
+    private var speechVoice = 0
+    private var speechSamples: ShortArray? = null
+    private var speechRenderedText = ""
+    private var speechRenderedVoice = -1
+    private var synthFile: File? = null
+    private var synthSamples: ShortArray? = null
+    @JvmField var synthEditing = false
+    private var synthBefore = 0
+    @JvmField val synth = ToneSynth.DEFAULTS.clone()
+    private var importReturnSelection = ADD_IMPORT
     @JvmField var imported: ShortArray? = null
     @JvmField var importSource: SampleDecoder.Source? = null
     @JvmField var importStart = 0L
@@ -250,6 +363,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
         settings = getSharedPreferences("tapedecksampler", MODE_PRIVATE)
         wheelSensitivity = settings.getInt("wheelSensitivity", DEFAULT_WHEEL).coerceIn(MIN_WHEEL, MAX_WHEEL)
         darkTheme = settings.getBoolean("darkTheme", (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES)
@@ -483,6 +597,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         val current = if (::tape.isInitialized) tape else null
         val prepared = preparedSession
         worker.execute {
+            clearSpeechFile(); clearSynthFile()
             try { current?.close() } catch (_: Exception) {}
             try { if (prepared != null && prepared.tape !== current) prepared.tape.close() } catch (_: Exception) {}
         }
@@ -497,14 +612,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
     @Throws(Exception::class)
     private fun openSession(entry: SessionStore.Entry): LoadedSession {
         val fresh = !entry.tape.exists()
+        val kit = StarterKit.kitFor(colorIndex(entry))
         val loaded = LoadedSession(entry, sessionPreferences(entry), Tape(entry.tape))
         try {
             if (fresh) {
-                StarterKit.seed(loaded.tape, loaded.sequencer)
-                if (!loaded.preferences.edit().putString("tracks", trackData(loaded.sequencer).toString()).commit()) throw IOException("Cannot save new project")
+                if (!loaded.preferences.edit().clear().commit()) throw IOException("Cannot reset new project")
+                StarterKit.seed(loaded.tape, loaded.sequencer, kit)
+                if (!loaded.preferences.edit().putString("tracks", trackData(loaded.sequencer).toString()).putInt("bpm", StarterKit.BPM[kit]).commit()) throw IOException("Cannot save new project")
             }
             loaded.track = load(loaded.sequencer, loaded.preferences)
-            loaded.regions = readRegions(loaded.preferences, loaded.sequencer, fresh)
+            loaded.regions = readRegions(loaded.preferences, loaded.sequencer, fresh, StarterKit.names(kit))
             return loaded
         } catch (e: Exception) {
             loaded.tape.close()
@@ -513,6 +630,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     private fun activateSession(loaded: LoadedSession) {
+        noTape = false
         session = loaded.entry
         preferences = loaded.preferences
         tape = loaded.tape
@@ -522,7 +640,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         audio = AudioEngine(sequencer, tape, this)
         audio.setClapClock(clapClock)
         settings.edit().putString("activeSession", session.id).apply()
-        pageClipboard = null; swapSource = -1; pasteTarget = -1
+        pageClipboard = null; moveSource = -1; pageNote = PAGE_NOTE_NONE
         imported = null
         importSource = null
         importWave = null
@@ -595,9 +713,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     private fun groupMask(json: JSONObject, key: String): Int {
         val mask = json.optInt(key, 0)
-        if (json.optInt("fxVersion", 1) >= FX_VERSION) return mask
-        val shift = mask and (1 shl LEGACY_SHIFT_GROUP) != 0
-        val kept = mask and ((1 shl LEGACY_WET_GROUP) or (1 shl LEGACY_SHIFT_GROUP)).inv()
+        val migrated = if (json.optInt("autoScale", 0) == LEGACY_ROBOT_SCALE && mask and (1 shl Sequencer.Effects.AUTOTUNE) != 0) mask or (1 shl Sequencer.Effects.ROBOT) else mask
+        if (json.optInt("fxVersion", 1) >= FX_VERSION) return migrated
+        val shift = migrated and (1 shl LEGACY_SHIFT_GROUP) != 0
+        val kept = migrated and ((1 shl LEGACY_WET_GROUP) or (1 shl LEGACY_SHIFT_GROUP)).inv()
         return if (shift) kept or (1 shl Sequencer.Effects.SHIFT) else kept
     }
 
@@ -610,8 +729,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.distortion = json.optInt("distortion", 0).coerceIn(0, TrackEffects.DISTORTIONS.size)
         controls.drive = json.optInt("drive", Sequencer.Effects.DEFAULT_DRIVE).coerceIn(0, 100)
         controls.distortionMix = json.optInt("distortionMix", 100).coerceIn(0, 100)
+        controls.crushBits = json.optInt("crushBits", if (controls.distortion == TrackEffects.BITCRUSH) TrackEffects.legacyCrushBits(controls.drive) else TrackEffects.DEFAULT_CRUSH_BITS).coerceIn(TrackEffects.MIN_CRUSH_BITS, TrackEffects.MAX_CRUSH_BITS)
+        controls.crushRate = json.optInt("crushRate", if (controls.distortion == TrackEffects.BITCRUSH) TrackEffects.legacyCrushRate(controls.drive) else TrackEffects.DEFAULT_CRUSH_RATE).coerceIn(TrackEffects.MIN_CRUSH_RATE, TrackEffects.MAX_CRUSH_RATE)
         controls.highPass = json.optInt("highPass", 0).coerceIn(0, MAX_FILTER_HZ)
         controls.lowPass = json.optInt("lowPass", 0).coerceIn(0, MAX_FILTER_HZ)
+        controls.bandPass = json.optInt("bandPass", 0).coerceIn(0, MAX_FILTER_HZ)
+        controls.highResonance = json.optInt("highResonance", 0).coerceIn(0, 100)
+        controls.lowResonance = json.optInt("lowResonance", 0).coerceIn(0, 100)
+        controls.bandResonance = json.optInt("bandResonance", 0).coerceIn(0, 100)
         controls.delayBeat = json.optInt("delayBeat", Sequencer.Effects.DEFAULT_DELAY_BEAT).coerceIn(0, TrackEffects.DELAY_BEATS.size - 1)
         controls.delayEchoes = json.optInt("delayEchoes", Sequencer.Effects.DEFAULT_DELAY_ECHOES).coerceIn(1, TrackEffects.MAX_ECHOES)
         controls.delayMix = json.optInt("delayMix", 0).coerceIn(0, 100)
@@ -627,6 +752,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.autoStrength = json.optInt("autoStrength", 0).coerceIn(0, 100)
         controls.autoRetune = json.optInt("autoRetune", Sequencer.Effects.DEFAULT_RETUNE_MS).coerceIn(0, MAX_RETUNE_MS)
         controls.autoMix = json.optInt("autoMix", 100).coerceIn(0, 100)
+        controls.robotProfile = RobotEffect.savedProfile(json.optInt("robotProfile", RobotEffect.DEFAULT_PROFILE), json.optInt("robotVersion", 1))
+        controls.robotMorph = json.optInt("robotMorph", RobotEffect.DEFAULT_MORPH).coerceIn(0, 100)
+        controls.robotMix = json.optInt("robotMix", 0).coerceIn(0, 100)
         controls.chance = json.optInt("chance", 100).coerceIn(0, 100)
         controls.every = json.optInt("every", 1).coerceIn(1, MAX_EVERY)
         controls.wobbleMode = json.optInt("wobbleMode", 0).coerceIn(0, WOBBLE_MODES.size - 1)
@@ -637,8 +765,17 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.trimStart = json.optInt("trimStart", 0).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
         controls.trimEnd = json.optInt("trimEnd", 0).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
         val chain = json.optJSONArray("chain")
-        if (chain == null || chain.length() != Sequencer.Effects.CHAIN_LENGTH) controls.splitGroups()
+        if (chain == null || chain.length() < Sequencer.Effects.SPLIT_CHAIN_LENGTH) controls.splitGroups()
         if (chain != null) controls.restoreOrder(IntArray(chain.length()) { chain.optInt(it) })
+        if (json.optInt("autoScale", 0) == LEGACY_ROBOT_SCALE) {
+            val enabled = controls.hasAutotune()
+            controls.robotProfile = RobotEffect.ROBOT
+            controls.robotMix = controls.autoMix
+            controls.power(Sequencer.Effects.ROBOT, enabled)
+            controls.power(Sequencer.Effects.AUTOTUNE, false)
+            controls.autoStrength = 0
+            controls.autoScale = PitchCorrector.CHROMATIC
+        }
         controls.normalize()
     }
 
@@ -647,13 +784,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
         for (group in controls.chain) chain.put(group)
         return JSONObject().put("chain", chain).put("chance", controls.chance).put("every", controls.every)
             .put("wobbleMode", controls.wobbleMode).put("wobbleRate", controls.wobbleRate).put("wobbleDepth", controls.wobbleDepth).put("gain", controls.gain.toDouble()).put("mute", controls.mute).put("speed", controls.speed)
-            .put("pitchHalf", controls.pitch).put("reverb", controls.reverb).put("distortion", controls.distortion).put("drive", controls.drive).put("distortionMix", controls.distortionMix)
-            .put("highPass", controls.highPass).put("lowPass", controls.lowPass).put("delayBeat", controls.delayBeat)
+            .put("pitchHalf", controls.pitch).put("reverb", controls.reverb).put("distortion", controls.distortion).put("drive", controls.drive).put("distortionMix", controls.distortionMix).put("crushBits", controls.crushBits).put("crushRate", controls.crushRate)
+            .put("highPass", controls.highPass).put("lowPass", controls.lowPass).put("bandPass", controls.bandPass)
+            .put("highResonance", controls.highResonance).put("lowResonance", controls.lowResonance).put("bandResonance", controls.bandResonance).put("delayBeat", controls.delayBeat)
             .put("delayEchoes", controls.delayEchoes).put("delayMix", controls.delayMix)
             .put("attack", controls.attack).put("decay", controls.decay).put("sustain", controls.sustain).put("release", controls.release)
             .put("swingOverride", controls.swingOverride).put("nudge", controls.nudge)
             .put("autoKey", controls.autoKey).put("autoScale", controls.autoScale).put("autoStrength", controls.autoStrength)
             .put("autoRetune", controls.autoRetune).put("autoMix", controls.autoMix)
+            .put("robotVersion", RobotEffect.PROFILE_VERSION).put("robotProfile", controls.robotProfile)
+            .put("robotMorph", controls.robotMorph).put("robotMix", controls.robotMix)
             .put("effectPower", controls.effectPower).put("effectPowerSet", controls.effectPowerSet)
             .put("trimStart", controls.trimStart).put("trimEnd", controls.trimEnd).put("custom", controls.custom).put("fxVersion", FX_VERSION)
     }
@@ -712,7 +852,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun save() {
-        if (!::sequencer.isInitialized) return
+        if (!::sequencer.isInitialized || noTape) return
         val list = trackData(sequencer)
         preferences.edit().putString("pages", pageData(sequencer).toString()).putInt("page", sequencer.selectedPage()).putString("tracks", list.toString()).putString("regions", regionData(regions).toString()).putInt("track", track).putInt("bpm", sequencer.bpm()).putInt("swing", sequencer.swing()).apply()
         if (ready) { instrument.invalidate(); checkSecrets() }
@@ -728,7 +868,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         return JSONObject().put("colors", colors).put("segments", segments)
     }
 
-    private fun readRegions(source: SharedPreferences, target: Sequencer, fresh: Boolean): SampleRegions {
+    private fun readRegions(source: SharedPreferences, target: Sequencer, fresh: Boolean, names: Array<String>): SampleRegions {
         val saved = source.getString("regions", null)
         if (saved != null) {
             try {
@@ -748,7 +888,6 @@ class MainActivity : Activity(), AudioEngine.Listener {
             } catch (_: Exception) {}
         }
         val result = SampleRegions()
-        val names = arrayOf("Kick", "Tom", "Snare", "Closed hat", "Open hat", "Square", "Synth", "Bass")
         for (i in target.tracks.indices.reversed()) {
             val t = target.tracks[i]
             result.place(t.start, t.end, (if (fresh) "starter:" else "existing:") + i, if (fresh) names[i] else "Track " + (i + 1) + " sample")
@@ -835,44 +974,11 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun requestNewSession() {
         if (busy) return
-        nameDialog("New tape", SessionStore.nextDefaultName(sessions), "Next") { label ->
+        textEntry("NEW TAPE", SessionStore.nextDefaultName(sessions), SessionStore.MAX_NAME_LENGTH, true) { label ->
             pendingName = label; colorForNew = true; editTarget = null
             mode = Mode.PROJECT_COLOR; selection = CASSETTE_ROWS[0] + sessions.size % (CASSETTE_ROWS[1] + CASSETTE_ROWS[2])
             instrument.invalidate()
         }
-    }
-
-    private fun nameDialog(title: String, initial: String, action: String, done: (String) -> Unit) {
-        val name = EditText(this)
-        name.isSingleLine = true
-        name.hint = "Project name"
-        name.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        name.filters = arrayOf(InputFilter.LengthFilter(SessionStore.MAX_NAME_LENGTH))
-        name.setText(initial)
-        name.selectAll()
-        name.setPadding(NAME_PADDING_X, NAME_PADDING_Y, NAME_PADDING_X, NAME_PADDING_Y)
-        val dialog = AlertDialog.Builder(this).setTitle(title).setView(name)
-            .setPositiveButton(action, null).setNegativeButton("Cancel", null).create()
-        newSessionDialog = dialog
-        dialog.setOnShowListener {
-            val positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            positive.setOnClickListener {
-                val label = name.text.toString().trim()
-                if (label.isEmpty()) { name.requestFocus(); return@setOnClickListener }
-                dialog.dismiss()
-                done(label)
-            }
-            positive.isEnabled = name.text.toString().isNotBlank()
-            name.addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(value: CharSequence, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(value: CharSequence, start: Int, before: Int, count: Int) {}
-                override fun afterTextChanged(value: Editable) { positive.isEnabled = value.toString().isNotBlank() }
-            })
-            name.requestFocus()
-            name.post { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(name, InputMethodManager.SHOW_IMPLICIT) }
-        }
-        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        dialog.show()
     }
 
     @JvmOverloads
@@ -913,7 +1019,11 @@ class MainActivity : Activity(), AudioEngine.Listener {
         return editTarget?.let { cassetteColor(it) } ?: CASSETTE_COLORS[0]
     }
 
-    fun carouselKey() = if (mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_EDIT) selection else -1
+    fun carouselKey(): Int = when {
+        mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_EDIT -> browsed()?.number ?: -1
+        mode == Mode.PROJECT_COLOR && colorForNew -> -1
+        else -> editTarget?.number ?: -1
+    }
 
     private fun sessionIndex(entry: SessionStore.Entry?): Int {
         if (entry == null) return 0
@@ -930,13 +1040,13 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     private fun openProject(target: SessionStore.Entry) {
         if (target.id == session.id) { mode = Mode.HOME; message = "TAPE ALREADY LOADED"; return }
-        instrument.insertCassette(target.name(), cassetteColor(target), session.name(), cassetteColor(session))
+        instrument.insertCassette(target.name(), cassetteColor(target), deckName(), cassetteColor(session))
         switchSession(target, "", -1, null)
     }
 
     private fun renameProject() {
         val target = editTarget ?: return
-        nameDialog("Rename tape", target.name(), "Rename") { label ->
+        textEntry("RENAME TAPE", target.name(), SessionStore.MAX_NAME_LENGTH, true) { label ->
             work("RENAMING TAPE", { sessionStore.rename(target, label) }) {
                 refreshSessions()
                 checkSecrets()
@@ -953,9 +1063,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
         }
     }
 
+    private fun deckName(): String? = if (noTape) null else session.name()
+
     private fun deleteProject() {
         val target = editTarget ?: return
-        if (sessions.size < 2) { error("Keep at least one tape"); mode = Mode.PROJECT_EDIT_MENU; selection = 2; return }
         val remove = Runnable {
             var failure: String? = null
             try { sessionStore.delete(target); deleteSharedPreferences(target.id) }
@@ -964,15 +1075,19 @@ class MainActivity : Activity(), AudioEngine.Listener {
             runOnUiThread {
                 if (shown != null) error(shown)
                 refreshSessions()
-                if (mode == Mode.PROJECT_EDIT) selection = min(selection, sessions.size - 1)
+                if (mode == Mode.PROJECT_EDIT && sessions.isEmpty()) { mode = Mode.PROJECTS; selection = PROJECT_NEW }
+                else if (mode == Mode.PROJECT_EDIT) selection = min(selection, sessions.size - 1)
                 instrument.invalidate()
             }
         }
         editTarget = null
         if (target.id == session.id) {
-            val next = sessions[if (sessionIndex(target) == 0) 1 else 0]
-            instrument.insertCassette(next.name(), cassetteColor(next), target.name(), cassetteColor(target))
-            switchSession(next, "", -1, remove)
+            cancelLive(); sequencer.stop(); audio.stop()
+            noTape = true
+            instrument.insertCassette(null, 0, target.name(), cassetteColor(target))
+            mode = Mode.PROJECTS; selection = PROJECT_NEW
+            message = "DELETED " + target.name()
+            worker.execute(remove)
         } else {
             mode = Mode.PROJECT_EDIT; selection = 0
             message = "DELETED " + target.name()
@@ -1009,6 +1124,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     fun selectTrack(index: Int) { selectTrack(index, true) }
 
     fun toggleTrackMute(index: Int) {
+        if (noTape) return
         if (busy || index < 0 || index >= sequencer.tracks.size) return
         val muted: Boolean
         synchronized(sequencer) {
@@ -1031,30 +1147,43 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     private fun selectTrack(index: Int, audition: Boolean) {
-        if (busy || (mode != Mode.HOME && mode != Mode.MENU && mode != Mode.EFFECTS)) return
+        if (noTape) return
+        if (generatorMenu()) {
+            if (index == track && audition) previewGenerated()
+            return
+        }
+        if (busy || mode == Mode.TEXT || mode == Mode.BACK) return
+        val editingPad = stepTarget >= 0 && editingStep(stepTarget)
+        if (mode != Mode.HOME && mode != Mode.MENU && mode != Mode.EFFECTS || index == track && editingPad) {
+            if (audition) audition(index)
+            return
+        }
         if (track == index && !audition) return
         val targetChanged = track != index || stepTarget >= 0
         if (track != index) { track = index; save() }
         stepTarget = -1
         if (mode == Mode.EFFECTS && targetChanged) { effectGroup = -1; selection = 0; deletedEffects.clear() }
-        haptic()
         message = "TRACK " + (track + 1) + " SELECTED"
-        if (audition) previewTrack()
+        if (audition) audition(track) else haptic()
+    }
+
+    private fun audition(index: Int) {
+        if (busy || mode == Mode.RECORDING || mode == Mode.DEVICE_RECORD || mode == Mode.SYNC_CLAP) return
+        haptic()
+        if (!acquireFocus()) return
+        if (index == track && stepTarget >= 0 && editingStep(stepTarget)) sequencer.previewStep(track, stepTarget) else sequencer.preview(index)
     }
 
     fun pad(index: Int) {
-        if (busy || carouselMode()) return
+        if (noTape) return
+        if (busy || carouselMode() || generatorMenu() || mode == Mode.TEXT) return
         statPads++
         when (mode) {
-            Mode.PAGE_PASTE, Mode.PAGE_RESET -> {
+            Mode.PAGES -> {
                 haptic()
-                if (index != pasteTarget) pasteTarget = index
-                else if (mode == Mode.PAGE_PASTE) applyPaste() else applyReset()
-                instrument.invalidate()
-                return
+                if (pageClipboard != null) { pageCursor = index; pastePage() } else pagePad(index)
+                instrument.invalidate(); return
             }
-            Mode.PAGE_COPIED -> { haptic(); pasteTarget = index; mode = Mode.PAGE_PASTE; instrument.invalidate(); return }
-            Mode.PAGES -> { haptic(); pagePad(index); instrument.invalidate(); return }
             Mode.RECORDING, Mode.DEVICE_RECORD, Mode.SYNC_CLAP -> return
             else -> {}
         }
@@ -1065,9 +1194,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun previewTrack() {
-        if (busy || mode == Mode.RECORDING || mode == Mode.DEVICE_RECORD || mode == Mode.SYNC_CLAP) return
-        haptic()
-        if (acquireFocus()) sequencer.preview(track)
+        if (generatorMenu()) previewGenerated() else audition(track)
     }
 
     private fun acquireFocus(): Boolean {
@@ -1080,6 +1207,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun transport() {
+        if (noTape) return
         if (busy || mode == Mode.RECORDING || mode == Mode.DEVICE_RECORD || mode == Mode.SYNC_CLAP) return
         if (sequencer.isPlaying() || sequencer.isSyncWaiting()) {
             sequencer.stop()
@@ -1103,6 +1231,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     fun wheelPlay() {
         if (busy) return
         when {
+            generatorMenu() -> previewGenerated()
             mode == Mode.DEVICE_RECORD -> if (DeviceCaptureService.active()) DeviceCaptureService.stop(this)
             mode == Mode.RECORDING -> { audio.stopRecording(); haptic() }
             isTimelineMode() -> previewTimeline()
@@ -1145,7 +1274,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun wheelSide(delta: Int) {
-        if (busy || delta == 0) return
+        if (busy || delta == 0 || pageOpening >= 0) return
+        if (mode == Mode.PAGES) {
+            if (delta > 0) { if (pageClipboard == null) movePage(); return }
+            copyPage()
+            haptic(); instrument.invalidate(); return
+        }
         if (effectStackPage()) {
             if (delta < 0) deleteEffect() else undoEffect()
             haptic(); instrument.invalidate()
@@ -1205,7 +1339,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
     fun effectItems(): Array<String> {
         if (effectGroup >= 0) {
             val parameters = FX_GROUP_PARAMETERS[effectGroup]
-            val items = parameters.indices.map { FX_GROUP_LABELS[effectGroup][it] + " / " + effectDisplay(parameters[it], effectSetting(parameters[it])) }.toMutableList()
+            val items = parameters.indices.map {
+                val parameter = parameters[it]
+                FX_GROUP_LABELS[effectGroup][it] + " / " + effectDisplay(parameter, effectSetting(parameter))
+            }.toMutableList()
             if (parameters.size > 1) items.add("Confirm")
             return items.toTypedArray()
         }
@@ -1215,6 +1352,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private fun addEffect(group: Int) {
         val transform = transforms(group)
         if (transform) cancelLive()
+        addHadOverride = stepTarget < 0 || sequencer.controls(track, stepTarget) != null
+        addSnapshot = effectControls().copy()
         synchronized(sequencer) {
             val controls = editableEffects()
             controls.power(group, true)
@@ -1228,6 +1367,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
         if (transform) scheduleLive()
         save()
         if (FX_GROUP_PARAMETERS[group].size == 1) { effectDirect = true; openEffect() }
+    }
+
+    fun effectRowEnabled(index: Int): Boolean {
+        val parameter = FX_GROUP_PARAMETERS.getOrNull(effectGroup)?.getOrNull(index)
+        return when (parameter) {
+            FX_DRIVE -> effectControls().distortion != TrackEffects.BITCRUSH
+            FX_CRUSH_BITS, FX_CRUSH_RATE -> effectControls().distortion == TrackEffects.BITCRUSH
+            FX_AUTO_KEY -> effectControls().autoScale != PitchCorrector.CHROMATIC
+            else -> true
+        }
     }
 
     private fun deleteEffect() {
@@ -1282,15 +1431,77 @@ class MainActivity : Activity(), AudioEngine.Listener {
         else instrument.effectLocked(stack[selection])
     }
 
+    fun optionItems(): Array<String> {
+        val stack = effectStack()
+        val copy = if (optionsRow < stack.size) "Copy " + FX_NAMES[stack[optionsRow]] else "Copy effect"
+        val paste = when (effectClipboardGroups.size) {
+            0 -> "Paste"
+            1 -> "Paste " + FX_NAMES[effectClipboardGroups[0]]
+            else -> "Paste stack / " + effectClipboardGroups.size + " effects"
+        }
+        return arrayOf(copy, "Copy stack", paste, "Order")
+    }
+
+    fun optionEnabled(index: Int): Boolean {
+        val count = effectStack().size
+        return when (index) {
+            OPTION_COPY -> optionsRow < count
+            OPTION_PASTE -> effectClipboardGroups.any { stepTarget < 0 || !trackOnly(it) }
+            else -> count > 0
+        }
+    }
+
+    private fun openOption() {
+        if (!optionEnabled(selection)) return
+        val stack = effectStack()
+        when (selection) {
+            OPTION_COPY, OPTION_COPY_STACK -> {
+                effectClipboard = effectControls().copy()
+                effectClipboardGroups = if (selection == OPTION_COPY) intArrayOf(stack[optionsRow]) else stack
+                message = if (selection == OPTION_COPY) "COPIED " + FX_NAMES[stack[optionsRow]].uppercase(Locale.US) else "COPIED EFFECT STACK"
+                mode = Mode.EFFECTS; selection = optionsRow
+            }
+            OPTION_PASTE -> pasteEffects()
+            else -> { mode = Mode.FX_REORDER; effectHeld = -1; selection = min(optionsRow, stack.size - 1) }
+        }
+    }
+
+    private fun pasteEffects() {
+        val clipboard = effectClipboard ?: return
+        val groups = effectClipboardGroups.filter { stepTarget < 0 || !trackOnly(it) }
+        val whole = effectClipboardGroups.size > 1
+        cancelLive()
+        synchronized(sequencer) {
+            val controls = editableEffects()
+            for (group in groups) {
+                val added = !controls.powered(group)
+                controls.restoreGroup(group, clipboard)
+                if (group == Sequencer.Effects.VOLUME) controls.gain = (clipboard.gain / clipboard.neutralGain * controls.neutralGain).coerceIn(0f, 1f)
+                if (Sequencer.Effects.movable(group) && added && !whole) controls.place(group, Int.MAX_VALUE)
+                markPad(group, Sequencer.Effects.movable(group))
+            }
+            if (whole) { controls.chain = clipboard.chain; markPad(-1, true) }
+            inheritTrack()
+            sequencer.refresh(track, stepTarget)
+        }
+        deletedEffects.clear()
+        mode = Mode.EFFECTS; effectGroup = -1; selection = stackRow(groups[0])
+        scheduleLive()
+        save()
+    }
+
     fun effectDisplay(parameter: Int, value: Int): String = when {
         parameter == FX_PITCH -> halfSteps(value) + " st"
         parameter == FX_DISTORTION -> TrackEffects.DISTORTIONS[(value - 1).coerceIn(0, TrackEffects.DISTORTIONS.size - 1)]
+        parameter == FX_CRUSH_BITS -> "$value bits"
+        parameter == FX_CRUSH_RATE -> "$value Hz"
         parameter == FX_DELAY_TIME -> Math.round(TrackEffects.delayFrames(value, sequencer.bpm()) * 1000.0 / Tape.RATE).toString() + " ms"
         parameter == FX_DELAY_FEEDBACK -> if (value == 1) "1 echo" else "$value echoes"
-        parameter == FX_HIGH_PASS || parameter == FX_LOW_PASS -> if (value == 0) "Off" else "$value Hz"
+        parameter == FX_HIGH_PASS || parameter == FX_LOW_PASS || parameter == FX_BAND_PASS -> if (value == 0) "Off" else "$value Hz"
         parameter == FX_ATTACK || parameter == FX_DECAY || parameter == FX_RELEASE || parameter == FX_AUTO_RETUNE -> "$value ms"
         parameter == FX_AUTO_KEY -> PitchCorrector.KEYS[value]
         parameter == FX_AUTO_SCALE -> PitchCorrector.SCALES[value]
+        parameter == FX_ROBOT_PROFILE -> RobotEffect.PROFILES[value.coerceIn(0, RobotEffect.PROFILES.size - 1)]
         parameter == FX_AUTO_STRENGTH && value == 0 -> "Off"
         parameter == FX_SWING && value == 0 -> sequencer.swing().toString() + "%"
         parameter == FX_NUDGE || parameter == FX_TRIM_START || parameter == FX_TRIM_END -> signed(value) + " ms"
@@ -1302,13 +1513,21 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun effectHint(parameter: Int): String = when (parameter) {
         FX_SPEED -> "${SampleProcessor.MIN_SPEED}-${SampleProcessor.MAX_SPEED}% / PITCH PRESERVED"
+        FX_DRIVE -> "0-100% / DISTORTION INTENSITY"
+        FX_CRUSH_BITS -> "${TrackEffects.MIN_CRUSH_BITS}-${TrackEffects.MAX_CRUSH_BITS} BITS / LOWER IS CRUNCHIER"
+        FX_CRUSH_RATE -> "${TrackEffects.MIN_CRUSH_RATE}-${TrackEffects.MAX_CRUSH_RATE} Hz / SAMPLE RATE"
+        FX_HIGH_RESONANCE, FX_LOW_RESONANCE, FX_BAND_RESONANCE -> "0-100% / EMPHASIS AT THE FILTER FREQUENCY"
         FX_PITCH -> "${SampleProcessor.MIN_PITCH / 2} TO +${SampleProcessor.MAX_PITCH / 2} SEMITONES / 0.5 STEPS"
-        FX_HIGH_PASS, FX_LOW_PASS -> "OFF / $MIN_FILTER_HZ-$MAX_FILTER_HZ Hz / LIVE"
+        FX_HIGH_PASS, FX_LOW_PASS, FX_BAND_PASS -> "OFF / $MIN_FILTER_HZ-$MAX_FILTER_HZ Hz / LIVE"
         FX_DELAY_TIME -> (if (effectValue == TrackEffects.DELAY_BEATS.size - 1) "1 BAR" else TrackEffects.DELAY_BEATS[effectValue].replace("T", " TRIPLET").replace("D", " DOTTED") + " NOTE") + " AT " + sequencer.bpm() + " BPM"
         FX_DELAY_FEEDBACK -> "1-${TrackEffects.MAX_ECHOES} REPEATS / FADING OUT"
         FX_ATTACK, FX_DECAY -> "0-$MAX_ENVELOPE_MS ms / LIVE"
         FX_RELEASE -> "FADE AT SAMPLE END / 0-$MAX_ENVELOPE_MS ms"
-        FX_AUTO_KEY, FX_AUTO_SCALE -> "MONOPHONIC VOCALS / INSTRUMENTS"
+        FX_AUTO_KEY -> if (effectControls().autoScale == PitchCorrector.CHROMATIC) "CHROMATIC USES ALL NOTES / KEY HAS NO EFFECT" else "TARGET KEY / NOTES FOLLOW THE SELECTED SCALE"
+        FX_ROBOT_PROFILE -> "SYNTHETIC VOICE / FOLLOWS THE ORIGINAL PITCH"
+        FX_ROBOT_MORPH -> "LOW TO HIGH FORMANTS / 50% NEUTRAL"
+        FX_ROBOT_MIX -> "0% ORIGINAL / 100% SYNTHETIC ONLY"
+        FX_AUTO_SCALE -> if (effectControls().autoScale == PitchCorrector.CHROMATIC) "ALL 12 NOTES / CHOOSE A SCALE TO USE THE KEY" else "ONLY NOTES IN THE SELECTED KEY AND SCALE"
         FX_AUTO_STRENGTH -> "0% OFF / 100% NOTE CORRECTION"
         FX_AUTO_RETUNE -> "0 ms ROBOTIC / $MAX_RETUNE_MS ms GENTLE"
         FX_AUTO_MIX -> "0% ORIGINAL / 100% CORRECTED"
@@ -1330,9 +1549,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
             FX_REVERB -> controls.reverb
             FX_DISTORTION -> controls.distortion
             FX_DISTORTION_MIX -> controls.distortionMix
+            FX_DRIVE -> controls.drive
+            FX_CRUSH_BITS -> controls.crushBits
+            FX_CRUSH_RATE -> controls.crushRate
             FX_VOLUME -> Math.round((if (stepTarget >= 0 && sequencer.controls(track, stepTarget) == null) 1f else controls.gain) * 100)
             FX_HIGH_PASS -> controls.highPass
             FX_LOW_PASS -> controls.lowPass
+            FX_BAND_PASS -> controls.bandPass
+            FX_HIGH_RESONANCE -> controls.highResonance
+            FX_LOW_RESONANCE -> controls.lowResonance
+            FX_BAND_RESONANCE -> controls.bandResonance
             FX_DELAY_TIME -> controls.delayBeat
             FX_DELAY_FEEDBACK -> controls.delayEchoes
             FX_DELAY_MIX -> controls.delayMix
@@ -1342,6 +1568,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
             FX_RELEASE -> controls.release
             FX_AUTO_KEY -> controls.autoKey
             FX_AUTO_SCALE -> controls.autoScale
+            FX_ROBOT_PROFILE -> controls.robotProfile
+            FX_ROBOT_MORPH -> controls.robotMorph
+            FX_ROBOT_MIX -> controls.robotMix
             FX_AUTO_STRENGTH -> controls.autoStrength
             FX_AUTO_RETUNE -> controls.autoRetune
             FX_AUTO_MIX -> controls.autoMix
@@ -1369,7 +1598,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     private fun inheritTrack() { if (stepTarget < 0) sequencer.inheritTrack(track) }
 
-    private fun rendersSample(parameter: Int) = parameter == FX_SPEED || parameter == FX_PITCH || parameter in FX_AUTO_KEY..FX_AUTO_MIX || parameter == FX_TRIM_START || parameter == FX_TRIM_END
+    private fun rendersSample(parameter: Int) = parameter == FX_SPEED || parameter == FX_PITCH || parameter in FX_AUTO_KEY..FX_AUTO_MIX || parameter in FX_ROBOT_PROFILE..FX_ROBOT_MIX || parameter == FX_TRIM_START || parameter == FX_TRIM_END
 
     private fun liveEffect(parameter: Int, value: Int) {
         synchronized(sequencer) {
@@ -1380,9 +1609,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_REVERB -> controls.reverb = value
                 FX_DISTORTION -> controls.distortion = value
                 FX_DISTORTION_MIX -> controls.distortionMix = value
+                FX_DRIVE -> controls.drive = value
+                FX_CRUSH_BITS -> controls.crushBits = value
+                FX_CRUSH_RATE -> controls.crushRate = value
                 FX_VOLUME -> controls.gain = value / 100f
                 FX_HIGH_PASS -> controls.highPass = value
                 FX_LOW_PASS -> controls.lowPass = value
+                FX_BAND_PASS -> controls.bandPass = value
+                FX_HIGH_RESONANCE -> controls.highResonance = value
+                FX_LOW_RESONANCE -> controls.lowResonance = value
+                FX_BAND_RESONANCE -> controls.bandResonance = value
                 FX_DELAY_TIME -> controls.delayBeat = value
                 FX_DELAY_FEEDBACK -> controls.delayEchoes = value
                 FX_DELAY_MIX -> controls.delayMix = value
@@ -1392,6 +1628,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_RELEASE -> controls.release = value
                 FX_AUTO_KEY -> controls.autoKey = value
                 FX_AUTO_SCALE -> controls.autoScale = value
+                FX_ROBOT_PROFILE -> controls.robotProfile = value
+                FX_ROBOT_MORPH -> controls.robotMorph = value
+                FX_ROBOT_MIX -> controls.robotMix = value
                 FX_AUTO_STRENGTH -> controls.autoStrength = value
                 FX_AUTO_RETUNE -> controls.autoRetune = value
                 FX_AUTO_MIX -> controls.autoMix = value
@@ -1405,6 +1644,21 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_TRIM_START -> controls.trimStart = value
                 FX_TRIM_END -> controls.trimEnd = value
             }
+            if (parameter == FX_TRIM_START || parameter == FX_TRIM_END) {
+                val slice = sequencer.tracks[track]
+                val gap = (slice.start - slice.end) / FRAMES_PER_MS + 1
+                if (controls.trimEnd - controls.trimStart < gap) {
+                    if (parameter == FX_TRIM_START) {
+                        controls.trimEnd = min(MAX_SHIFT_MS, controls.trimStart + gap)
+                        controls.trimStart = controls.trimEnd - gap
+                        effectValue = controls.trimStart
+                    } else {
+                        controls.trimStart = max(-MAX_SHIFT_MS, controls.trimEnd - gap)
+                        controls.trimEnd = controls.trimStart + gap
+                        effectValue = controls.trimEnd
+                    }
+                }
+            }
             markPad(FX_GROUP_PARAMETERS.indexOfFirst { parameter in it }, false)
             inheritTrack()
             if (rendersSample(parameter)) sequencer.refresh(track, stepTarget)
@@ -1413,6 +1667,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun holdPad(step: Int) {
+        if (noTape) return
         if (stepTarget == step && editingStep(step)) applyStepEffects()
         else openStepEffects(step)
     }
@@ -1432,7 +1687,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun openStepEffects(step: Int) {
-        if (pageMenu() || carouselMode()) return
+        addSnapshot = null
+        if (pageMenu() || carouselMode() || generatorMenu() || mode == Mode.TEXT) return
         if (busy || mode == Mode.RECORDING || mode == Mode.DEVICE_RECORD || mode == Mode.SYNC_CLAP) return
         rollbackDraft()
         sequencer.stopSelectionPreview()
@@ -1473,18 +1729,40 @@ class MainActivity : Activity(), AudioEngine.Listener {
             return
         }
         if (selection >= FX_GROUP_PARAMETERS[effectGroup].size) {
+            addSnapshot = null
             selection = stackRow(effectGroup); effectGroup = -1
             return
         }
+        if (!effectRowEnabled(selection)) return
         effectParameter = FX_GROUP_PARAMETERS[effectGroup][selection]
         effectReturnSelection = selection
         effectValue = effectSetting(effectParameter)
+        if (effectParameter == FX_TRIM_START || effectParameter == FX_TRIM_END) {
+            val slice = sequencer.tracks[track]
+            shiftZoomFrames = max(Tape.RATE.toLong(), (slice.end - slice.start) * 3L)
+        }
         effectHadOverride = stepTarget < 0 || sequencer.controls(track, stepTarget) != null
         effectSnapshot = effectControls().copy()
         mode = Mode.FX_VALUE
     }
 
+    private fun discardAdded() {
+        val snapshot = addSnapshot ?: return
+        addSnapshot = null
+        cancelLive()
+        synchronized(sequencer) {
+            if (stepTarget >= 0 && !addHadOverride) sequencer.resetStep(track, stepTarget)
+            else editableEffects().copyFrom(snapshot)
+            inheritTrack()
+            sequencer.refresh(track)
+        }
+        mode = Mode.EFFECTS; effectGroup = -1; selection = effectStack().size
+        scheduleLive()
+        save()
+    }
+
     private fun commitEffect() {
+        if (effectDirect) addSnapshot = null
         effectSnapshot = null
         cancelLive()
         returnToEffects()
@@ -1590,19 +1868,27 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun wheel(delta: Int) {
-        if (busy || delta == 0 || mode == Mode.RECORDING) return
+        if (busy || delta == 0 || mode == Mode.RECORDING || pageOpening >= 0) return
         val previousMode = mode
         val previousValue = wheelValue()
         val increment = timelineIncrement()
         val step = delta * increment
         when (mode) {
             Mode.HOME -> selectTrack((track + delta.toLong()).coerceIn(0L, Sequencer.TRACKS - 1L).toInt(), false)
-            Mode.PAGES -> { selection = moveSelection(delta, PAGE_ACTIONS.size); pageAction = selection; swapSource = -1; pagePrompt = false }
+            Mode.PAGES -> { pageCursor = (pageCursor + delta.toLong()).coerceIn(0L, Sequencer.PAGE_COUNT - 1L).toInt(); pageNote = PAGE_NOTE_NONE }
+            Mode.SYNTH -> synthWheel(delta)
+            Mode.FX_OPTIONS -> selection = moveSelection(delta, optionItems().size)
             Mode.TEMPO -> selection = moveSelection(delta, 2)
             Mode.SWING -> sequencer.swing(sequencer.swing() + delta)
             Mode.BPM -> sequencer.tempo(sequencer.bpm() + delta)
             Mode.MENU -> selection = moveSelection(delta, MENU.size)
             Mode.ADD_SAMPLE -> selection = moveSelection(delta, ADD_SAMPLE.size)
+            Mode.SPEECH -> selection = moveSelection(delta, speechItems().size)
+            Mode.SPEECH_VOICE -> {
+                val next = moveSelection(delta, RetroSpeech.voices.size)
+                if (next != selection) sequencer.stopSelectionPreview()
+                selection = next
+            }
             Mode.SYSTEM -> selection = moveSelection(delta, systemItems().size)
             Mode.EXPORT -> selection = moveSelection(delta, EXPORT_ITEMS.size)
             Mode.EXPORT_LOOPS -> selection = moveSelection(delta, 2)
@@ -1625,21 +1911,24 @@ class MainActivity : Activity(), AudioEngine.Listener {
                     FX_SPEED -> (v + delta).coerceIn(SampleProcessor.MIN_SPEED, SampleProcessor.MAX_SPEED)
                     FX_PITCH -> (v + delta).coerceIn(SampleProcessor.MIN_PITCH, SampleProcessor.MAX_PITCH)
                     FX_DISTORTION -> (v + delta.toLong()).coerceIn(1L, TrackEffects.DISTORTIONS.size.toLong()).toInt()
-                    FX_HIGH_PASS, FX_LOW_PASS -> {
+                    FX_HIGH_PASS, FX_LOW_PASS, FX_BAND_PASS -> {
                         val range = MAX_FILTER_HZ / MIN_FILTER_HZ.toDouble()
                         var position = if (v == 0) 0 else 1 + Math.round(Math.log(v / MIN_FILTER_HZ.toDouble()) / Math.log(range) * FILTER_STEPS).toInt()
                         position = (position + delta).coerceIn(0, FILTER_STEPS + 1)
                         if (position == 0) 0 else Math.round(MIN_FILTER_HZ * Math.pow(range, (position - 1) / FILTER_STEPS.toDouble())).toInt()
                     }
+                    FX_CRUSH_BITS -> (v + delta).coerceIn(TrackEffects.MIN_CRUSH_BITS, TrackEffects.MAX_CRUSH_BITS)
+                    FX_CRUSH_RATE -> (v + delta * TrackEffects.CRUSH_RATE_STEP).coerceIn(TrackEffects.MIN_CRUSH_RATE, TrackEffects.MAX_CRUSH_RATE)
                     FX_DELAY_TIME -> (v + delta).coerceIn(0, TrackEffects.DELAY_BEATS.size - 1)
                     FX_DELAY_FEEDBACK -> (v + delta).coerceIn(1, TrackEffects.MAX_ECHOES)
                     FX_ATTACK, FX_DECAY, FX_RELEASE -> envelopeStep(v, delta)
                     FX_EVERY -> (v + delta).coerceIn(1, MAX_EVERY)
                     FX_WOBBLE_MODE -> (v + delta).coerceIn(0, WOBBLE_MODES.size - 1)
                     FX_WOBBLE_RATE -> (v + delta * FAST_STEP).coerceIn(MIN_WOBBLE_RATE, MAX_WOBBLE_RATE)
-                    FX_TRIM_START, FX_TRIM_END -> (v + delta * FAST_STEP).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
+                    FX_TRIM_START, FX_TRIM_END -> (v + delta * (if (shiftZoomFrames in 1 until Tape.RATE / 2) 1 else FAST_STEP)).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
                     FX_AUTO_KEY -> (v + delta).coerceIn(0, PitchCorrector.KEYS.size - 1)
                     FX_AUTO_SCALE -> (v + delta).coerceIn(0, PitchCorrector.SCALES.size - 1)
+                    FX_ROBOT_PROFILE -> (v + delta).coerceIn(0, RobotEffect.PROFILES.size - 1)
                     FX_AUTO_RETUNE -> (v + delta * FAST_STEP).coerceIn(0, MAX_RETUNE_MS)
                     FX_SWING -> (v + delta).coerceIn(Sequencer.MIN_SWING, Sequencer.MAX_SWING)
                     FX_NUDGE -> (v + delta).coerceIn(-MAX_NUDGE_MS, MAX_NUDGE_MS)
@@ -1688,6 +1977,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.VIBRATION -> vibrationIntensity.toLong()
         Mode.SENSITIVITY -> wheelSensitivity.toLong()
         Mode.FX_VALUE -> effectValue.toLong()
+        Mode.PAGES -> pageCursor.toLong()
+        Mode.SYNTH -> if (synthEditing) synth[selection].toLong() else selection.toLong()
         Mode.IMPORT_START -> importStart
         Mode.IMPORT_END -> importEnd
         Mode.START -> start.toLong()
@@ -1770,6 +2061,15 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun zoomByWheel(direction: Int) {
         if (busy || direction == 0) return
+        if (shifting()) {
+            val bounds = shiftBounds()
+            val whole = (bounds[1] - bounds[0]).toLong()
+            val before = if (shiftZoomFrames <= 0) whole else min(whole, shiftZoomFrames)
+            val next = min(whole, max(SHIFT_ZOOM_MIN.toLong(), Math.round(if (direction > 0) before * ZOOM_STEP else before / ZOOM_STEP)))
+            if (next != before) haptic()
+            shiftZoomFrames = next
+            return
+        }
         val full = timelineLength()
         val current = timelineSpan()
         autoHomeZoom = false
@@ -1778,19 +2078,48 @@ class MainActivity : Activity(), AudioEngine.Listener {
         if (timelineSpan() != current) haptic()
     }
 
+    fun shifting() = mode == Mode.FX_VALUE && (effectParameter == FX_TRIM_START || effectParameter == FX_TRIM_END)
+
+    private fun shiftBounds(): IntArray {
+        val slice = sequencer.tracks[track]
+        val margin = MAX_SHIFT_MS * FRAMES_PER_MS * 6 / 5
+        return intArrayOf(max(0, slice.start - margin), min(Tape.LENGTH, slice.end + margin))
+    }
+
+    fun shiftWindow(): IntArray {
+        val bounds = shiftBounds()
+        if (shiftZoomFrames <= 0 || shiftZoomFrames >= bounds[1] - bounds[0]) return bounds
+        val span = shiftZoomFrames.toInt()
+        val slice = sequencer.tracks[track]
+        val controls = effectControls()
+        val edge = if (effectParameter == FX_TRIM_START) Sequencer.sliceStart(slice, controls) else Sequencer.sliceEnd(slice, controls)
+        val from = (edge - span / 2).coerceIn(bounds[0], bounds[1] - span)
+        return intArrayOf(from, from + span)
+    }
+
     fun isTimelineMode() = mode == Mode.START || mode == Mode.END || mode == Mode.RECORD_POSITION || mode == Mode.IMPORT_POSITION || mode == Mode.RECORDING || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END
 
     fun confirm() {
-        if (busy) return
-        sequencer.stopSelectionPreview()
+        if (busy || pageOpening >= 0) return
+        if (!(mode == Mode.SPEECH && selection == SPEECH_PREVIEW) && mode != Mode.SYNTH) sequencer.stopSelectionPreview()
         haptic()
         when (mode) {
             Mode.HOME -> { mode = Mode.MENU; selection = 0 }
-            Mode.PAGES -> pagePrompt = true
-            Mode.PAGE_PASTE -> applyPaste()
-            Mode.PAGE_RESET -> applyReset()
+            Mode.PAGES -> if (pageClipboard == null) pagePad(pageCursor) else pastePage()
+            Mode.TEXT -> finishText()
+            Mode.SYNTH -> openSynth()
+            Mode.FX_OPTIONS -> openOption()
             Mode.MENU -> openMenu()
             Mode.ADD_SAMPLE -> openAddSample()
+            Mode.SPEECH -> when (selection) {
+                SPEECH_TEXT -> textEntry("SPEECH TEXT", speechText, RetroSpeech.MAX_TEXT_LENGTH, false) { value ->
+                    if (value != speechText) { speechText = value; clearSpeechFile() }
+                }
+                SPEECH_VOICE -> { mode = Mode.SPEECH_VOICE; selection = speechVoice }
+                SPEECH_PREVIEW -> previewSpeech()
+                SPEECH_ADD -> prepareSpeech(false)
+            }
+            Mode.SPEECH_VOICE -> { speechVoice = selection; mode = Mode.SPEECH; selection = SPEECH_VOICE }
             Mode.DEVICE_RECORD -> if (DeviceCaptureService.active()) DeviceCaptureService.stop(this) else requestDeviceRecording()
             Mode.SYSTEM -> openSystem()
             Mode.EXPORT -> openExport()
@@ -1821,13 +2150,13 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.PROJECTS -> when (selection) {
                 PROJECT_NEW -> requestNewSession()
                 PROJECT_OPEN -> if (browseListFor(Mode.PROJECT_OPEN).isEmpty()) error("No other tapes to open yet") else { mode = Mode.PROJECT_OPEN; selection = 0 }
-                PROJECT_EDIT -> { mode = Mode.PROJECT_EDIT; selection = sessionIndex(session) }
-                PROJECT_EXPORT -> { mode = Mode.EXPORT; selection = 0 }
+                PROJECT_EDIT -> if (sessions.isEmpty()) error("No tapes yet") else { mode = Mode.PROJECT_EDIT; selection = if (noTape) 0 else sessionIndex(session) }
+                PROJECT_EXPORT -> if (noTape) error("Insert a tape first") else { mode = Mode.EXPORT; selection = 0 }
                 else -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
                     .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")).addCategory(Intent.CATEGORY_OPENABLE), REQUEST_IMPORT_PROJECT)
             }
             Mode.PROJECT_OPEN -> browsed()?.let { openProject(it) }
-            Mode.PROJECT_EDIT -> { editTarget = sessions[selection]; mode = Mode.PROJECT_EDIT_MENU; selection = 0 }
+            Mode.PROJECT_EDIT -> if (sessions.isNotEmpty()) { editTarget = sessions[min(selection, sessions.size - 1)]; mode = Mode.PROJECT_EDIT_MENU; selection = 0 }
             Mode.PROJECT_EDIT_MENU -> when (selection) {
                 EDIT_RENAME -> renameProject()
                 EDIT_COLOR -> { colorForNew = false; mode = Mode.PROJECT_COLOR; selection = editTarget?.let { colorIndex(it) } ?: 0 }
@@ -1836,7 +2165,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.PROJECT_COLOR ->
                 if (colorForNew) {
                     val color = selection
-                    instrument.insertCassette(pendingName, CASSETTE_COLORS[color], session.name(), cassetteColor(session))
+                    instrument.insertCassette(pendingName, CASSETTE_COLORS[color], deckName(), cassetteColor(session))
                     createSession(pendingName, color)
                 } else recolorProject(selection)
             Mode.PROJECT_DELETE -> deleteProject()
@@ -1854,21 +2183,28 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     fun cancel() {
-        if (busy) return
+        if (busy || pageOpening >= 0) return
         sequencer.stopSelectionPreview()
         when (mode) {
             Mode.PAGES -> {
-                if (!pagePrompt) mode = Mode.HOME
-                pagePrompt = false; swapSource = -1
+                if (moveSource >= 0) moveSource = -1
+                else if (pageClipboard != null) { pageClipboard = null; pageCopyActive = false }
+                else mode = Mode.HOME
+                pageNote = PAGE_NOTE_NONE
             }
-            Mode.PAGE_COPIED -> { mode = Mode.PAGES; selection = pageAction }
-            Mode.PAGE_RESET -> { mode = Mode.PAGES; selection = pageAction; pasteTarget = -1 }
-            Mode.PAGE_PASTE -> { mode = Mode.PAGE_COPIED; selection = pageAction; pasteTarget = -1 }
+            Mode.TEXT -> { textDone = null; hideKeyboard(); mode = textReturnMode; selection = textReturnSelection }
+            Mode.SYNTH -> if (synthEditing) {
+                synthEditing = false
+                if (synth[selection] != synthBefore) { synth[selection] = synthBefore; clearSynthFile() }
+            } else { clearSynthFile(); mode = Mode.ADD_SAMPLE; selection = ADD_SYNTH }
+            Mode.FX_OPTIONS -> { mode = Mode.EFFECTS; selection = optionsRow }
             Mode.HOME -> { sequencer.stop(); message = "STOPPED" }
             Mode.DEVICE_RECORD ->
                 if (DeviceCaptureService.active()) DeviceCaptureService.stop(this)
                 else if (!deviceCaptureStarting) { mode = Mode.ADD_SAMPLE; selection = ADD_DEVICE }
             Mode.ADD_SAMPLE -> { mode = Mode.MENU; selection = MENU_ADD_SAMPLE }
+            Mode.SPEECH -> { clearSpeechFile(); mode = Mode.ADD_SAMPLE; selection = ADD_SPEECH }
+            Mode.SPEECH_VOICE -> { mode = Mode.SPEECH; selection = SPEECH_VOICE }
             Mode.RECORDING -> { audio.stopRecording(); message = "FINISHING RECORDING…" }
             Mode.END, Mode.START -> {
                 rollbackDraft(); scheduleLive()
@@ -1879,7 +2215,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.IMPORT_START -> {
                 imported = null; importSource = null; importWave = null
                 clearSourcePreview()
-                mode = Mode.ADD_SAMPLE; selection = ADD_IMPORT
+                if (importReturnSelection == ADD_SPEECH) {
+                    mode = Mode.SPEECH; selection = SPEECH_ADD
+                } else if (importReturnSelection == ADD_SYNTH) {
+                    mode = Mode.SYNTH; selection = SYNTH_ADD
+                } else {
+                    clearSpeechFile(); clearSynthFile()
+                    mode = Mode.ADD_SAMPLE; selection = importReturnSelection
+                }
             }
             Mode.RECORD_POSITION -> { mode = Mode.ADD_SAMPLE; selection = ADD_MICROPHONE }
             Mode.TEMPO -> { mode = Mode.MENU; selection = MENU_TEMPO }
@@ -1897,7 +2240,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             }
             Mode.VIBRATION -> { setVibrationIntensity(vibrationBefore); mode = Mode.SYSTEM; selection = SYSTEM_VIBRATION }
             Mode.SENSITIVITY -> { wheelSensitivity = wheelBefore; mode = Mode.SYSTEM; selection = SYSTEM_WHEEL }
-            Mode.PROJECTS -> { mode = Mode.MENU; selection = MENU_PROJECT }
+            Mode.PROJECTS -> if (!noTape) { mode = Mode.MENU; selection = MENU_PROJECT }
             Mode.PROJECT_OPEN -> { mode = Mode.PROJECTS; selection = PROJECT_OPEN }
             Mode.PROJECT_EDIT -> { mode = Mode.PROJECTS; selection = PROJECT_EDIT }
             Mode.PROJECT_EDIT_MENU -> { mode = Mode.PROJECT_EDIT; selection = sessionIndex(editTarget) }
@@ -1906,13 +2249,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 else { mode = Mode.PROJECT_EDIT_MENU; selection = EDIT_COLOR }
             Mode.PROJECT_DELETE -> { mode = Mode.PROJECT_EDIT_MENU; selection = EDIT_DELETE }
             Mode.EFFECTS ->
-                if (effectGroup >= 0) { selection = stackRow(effectGroup); effectGroup = -1 }
+                if (effectGroup >= 0 && addSnapshot != null) discardAdded()
+                else if (effectGroup >= 0) { selection = stackRow(effectGroup); effectGroup = -1 }
                 else { mode = if (stepFromHold) Mode.HOME else Mode.MENU; selection = 0; stepTarget = -1; deletedEffects.clear() }
             Mode.FX_ADD -> { mode = Mode.EFFECTS; selection = effectStack().size }
             Mode.FX_REORDER -> { effectHeld = -1; mode = Mode.EFFECTS; save() }
             Mode.FX_VALUE -> {
                 rollbackDraft(); scheduleLive()
-                returnToEffects()
+                if (effectDirect && addSnapshot != null) { effectDirect = false; discardAdded() } else returnToEffects()
             }
             else -> mode = Mode.HOME
         }
@@ -1927,7 +2271,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     private fun openMenu() {
         when (selection) {
-            MENU_EFFECTS -> { stepTarget = -1; stepFromHold = false; effectGroup = -1; effectHeld = -1; deletedEffects.clear(); mode = Mode.EFFECTS; selection = 0 }
+            MENU_EFFECTS -> { addSnapshot = null; stepTarget = -1; stepFromHold = false; effectGroup = -1; effectHeld = -1; deletedEffects.clear(); mode = Mode.EFFECTS; selection = 0 }
             MENU_ADD_SAMPLE -> { mode = Mode.ADD_SAMPLE; selection = 0 }
             MENU_TEMPO -> { mode = Mode.TEMPO; selection = 0 }
             MENU_SYNC -> if (clapClock == null) { setSyncEnabled(true); beginClap() } else { mode = Mode.SYNC; selection = 0 }
@@ -1939,16 +2283,149 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun tempoItems() = arrayOf("BPM / " + sequencer.bpm(), "Swing / " + sequencer.swing() + "%")
 
-    fun hasTimelineZoom() = mode == Mode.HOME || mode == Mode.START || mode == Mode.END || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END || mode == Mode.IMPORT_POSITION || mode == Mode.RECORD_POSITION
+    fun hasTimelineZoom() = shifting() || mode == Mode.HOME || mode == Mode.START || mode == Mode.END || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END || mode == Mode.IMPORT_POSITION || mode == Mode.RECORD_POSITION
 
-    fun editingStep(step: Int) = stepTarget == step && (mode == Mode.EFFECTS || mode == Mode.FX_ADD || mode == Mode.FX_REORDER || mode == Mode.FX_VALUE)
+    fun editingStep(step: Int) = stepTarget == step && (mode == Mode.EFFECTS || mode == Mode.FX_ADD || mode == Mode.FX_OPTIONS || mode == Mode.FX_REORDER || mode == Mode.FX_VALUE)
 
     private fun openAddSample() {
         when (selection) {
             ADD_MICROPHONE -> { sequencer.stop(); cursor = sequencer.tracks[track].start; mode = Mode.RECORD_POSITION }
             ADD_DEVICE -> { sequencer.stop(); mode = Mode.DEVICE_RECORD; message = "RECORD TO START RECORDING" }
+            ADD_SPEECH -> { sequencer.stop(); mode = Mode.SPEECH; selection = SPEECH_TEXT }
+            ADD_SYNTH -> { sequencer.stop(); synthEditing = false; mode = Mode.SYNTH; selection = 0 }
             else -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("audio/*").addCategory(Intent.CATEGORY_OPENABLE), REQUEST_IMPORT_AUDIO)
         }
+    }
+
+    fun speechMenu() = mode == Mode.SPEECH || mode == Mode.SPEECH_VOICE
+
+    fun speechItems(): Array<String> {
+        val label = speechText.replace(Regex("\\s+"), " ").take(SPEECH_LABEL_LENGTH).ifEmpty { "Enter text" }
+        val preview = when {
+            sequencer.isPreviewing() -> "Pause preview"
+            sequencer.hasSelectionPreview() -> "Resume preview"
+            else -> "Preview"
+        }
+        return arrayOf("Text / $label", "Voice / " + RetroSpeech.voices[speechVoice], preview, "Add sample")
+    }
+
+    fun generatorMenu() = speechMenu() || mode == Mode.SYNTH
+
+    private fun previewGenerated() {
+        if (mode != Mode.SYNTH) previewSpeech()
+        else if (!busy) { haptic(); auditionSynth(false) }
+    }
+
+    fun synthItems(): Array<String> {
+        val items = ArrayList<String>()
+        for (parameter in ToneSynth.LABELS.indices) {
+            val value = ToneSynth.display(parameter, synth[parameter])
+            items.add(ToneSynth.LABELS[parameter] + " / " + value)
+        }
+        items.add(when {
+            sequencer.isPreviewing() -> "Pause preview"
+            sequencer.hasSelectionPreview() -> "Resume preview"
+            else -> "Preview"
+        })
+        items.add("Add sample")
+        return items.toTypedArray()
+    }
+
+    private fun synthWheel(delta: Int) {
+        if (!synthEditing) { selection = moveSelection(delta, synthItems().size); return }
+        val parameter = selection
+        val next = (synth[parameter] + delta.toLong() * ToneSynth.STEP[parameter]).coerceIn(ToneSynth.MINIMUM[parameter].toLong(), ToneSynth.MAXIMUM[parameter].toLong()).toInt()
+        if (next == synth[parameter]) return
+        synth[parameter] = next
+        clearSynthFile()
+        auditionSynth(true)
+    }
+
+    private fun auditionSynth(restart: Boolean) {
+        val samples = synthSamples ?: ToneSynth.render(synth).also { synthSamples = it }
+        if (restart) sequencer.stopSelectionPreview()
+        if (acquireFocus()) sequencer.toggleSelection(samples, 0, samples.size)
+        instrument.invalidate()
+    }
+
+    private fun openSynth() {
+        if (selection < SYNTH_PREVIEW) {
+            if (!synthEditing) synthBefore = synth[selection]
+            synthEditing = !synthEditing
+            return
+        }
+        if (selection == SYNTH_PREVIEW) { auditionSynth(false); return }
+        sequencer.stop()
+        val settings = synth.clone()
+        val name = "Synth / " + ToneSynth.WAVES[settings[ToneSynth.WAVE]] + " " + ToneSynth.noteName(settings[ToneSynth.NOTE])
+        work("PREPARING SYNTH TONE", {
+            clearSynthFile()
+            val samples = ToneSynth.render(settings)
+            val file = File.createTempFile("synth-", ".wav", cacheDir)
+            try {
+                file.outputStream().use { output ->
+                    output.write(Tape.header(samples.size.toLong()))
+                    val bytes = java.nio.ByteBuffer.allocate(samples.size * Tape.BYTES_PER_SAMPLE).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    bytes.asShortBuffer().put(samples)
+                    output.write(bytes.array())
+                }
+            } catch (error: Exception) {
+                file.delete()
+                throw error
+            }
+            synthSamples = samples; synthFile = file
+        }) { decode(Uri.fromFile(synthFile!!), name, true) }
+    }
+
+    private fun clearSynthFile() {
+        synthFile?.delete()
+        synthFile = null
+        synthSamples = null
+    }
+
+    private fun previewSpeech() {
+        if (busy) return
+        haptic()
+        prepareSpeech(true)
+    }
+
+    private fun prepareSpeech(preview: Boolean) {
+        if (speechText.isBlank()) { error("Enter speech text first"); return }
+        val text = speechText
+        val voice = if (mode == Mode.SPEECH_VOICE) selection else speechVoice
+        val done = {
+            if (preview) {
+                val samples = speechSamples!!
+                if (acquireFocus()) sequencer.toggleSelection(samples, 0, samples.size)
+                instrument.invalidate()
+            } else decode(Uri.fromFile(speechFile!!), "Speech / " + RetroSpeech.voices[voice], true)
+        }
+        if (speechRenderedText == text && speechRenderedVoice == voice && speechSamples != null && speechFile?.exists() == true) {
+            done()
+            return
+        }
+        sequencer.stop()
+        work("GENERATING RETRO SPEECH", {
+            clearSpeechFile()
+            val file = RetroSpeech.synthesize(this, text, voice)
+            try {
+                speechSamples = SampleDecoder.decode(this, Uri.fromFile(file))
+                speechFile = file
+                speechRenderedText = text
+                speechRenderedVoice = voice
+            } catch (error: Exception) {
+                file.delete()
+                throw error
+            }
+        }, preview) { done() }
+    }
+
+    private fun clearSpeechFile() {
+        speechFile?.delete()
+        speechFile = null
+        speechSamples = null
+        speechRenderedText = ""
+        speechRenderedVoice = -1
     }
 
     @Suppress("DEPRECATION")
@@ -2025,12 +2502,13 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun screenPath(): String = when (mode) {
         Mode.HOME -> session.name()
-        Mode.PAGES -> "SEQUENCE PAGES"
-        Mode.PAGE_COPIED -> "SEQUENCE PAGES / COPY"
-        Mode.PAGE_PASTE -> "SEQUENCE PAGES / PASTE"
-        Mode.PAGE_RESET -> "SEQUENCE PAGES / RESET"
+        Mode.PAGES -> "PAGES"
+        Mode.SYNTH -> "ADD SAMPLE / SYNTH" + if (synthEditing) " / " + ToneSynth.LABELS[selection].uppercase(Locale.US) else ""
+        Mode.TEXT -> textTitle
         Mode.MENU -> "MENU"
         Mode.ADD_SAMPLE -> "ADD SAMPLE"
+        Mode.SPEECH -> "TEXT TO SPEECH"
+        Mode.SPEECH_VOICE -> "SPEECH / VOICE"
         Mode.DEVICE_RECORD -> "RECORD / DEVICE"
         Mode.SYSTEM -> "SYSTEM"
         Mode.EXPORT -> "PROJECT / EXPORT"
@@ -2040,11 +2518,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.SYNC_CLAP -> "SYNC / CLAP"
         Mode.VIBRATION -> "SYSTEM / VIBRATION"
         Mode.SENSITIVITY -> "SYSTEM / WHEEL"
-        Mode.EFFECTS, Mode.FX_ADD, Mode.FX_REORDER, Mode.FX_VALUE -> {
+        Mode.EFFECTS, Mode.FX_ADD, Mode.FX_OPTIONS, Mode.FX_REORDER, Mode.FX_VALUE -> {
             val target = if (stepTarget < 0) String.format(Locale.US, "PAGE %02d / TRACK %d", sequencer.selectedPage() + 1, track + 1) else "PAD " + String.format(Locale.US, "%02d", stepTarget + 1)
             target + " / " + when {
                 mode == Mode.FX_ADD -> "ADD EFFECT"
                 mode == Mode.FX_REORDER -> "ORDER"
+                mode == Mode.FX_OPTIONS -> "OPTIONS"
                 effectGroup < 0 -> "EFFECTS"
                 else -> FX_NAMES[effectGroup].uppercase(Locale.US)
             }
@@ -2348,6 +2827,13 @@ class MainActivity : Activity(), AudioEngine.Listener {
     fun decode(uri: Uri, name: String) { decode(uri, name, false) }
 
     private fun decode(uri: Uri, name: String, recording: Boolean) {
+        importReturnSelection = when {
+            speechFile?.let { Uri.fromFile(it) == uri } == true -> ADD_SPEECH
+            synthFile?.let { Uri.fromFile(it) == uri } == true -> ADD_SYNTH
+            else -> ADD_IMPORT
+        }
+        if (importReturnSelection != ADD_SPEECH) clearSpeechFile()
+        if (importReturnSelection != ADD_SYNTH) clearSynthFile()
         sequencer.stop()
         work("READING SOURCE WAVEFORM", {
             val source = SampleDecoder.inspect(this, uri)
@@ -2399,6 +2885,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             imported = null
             importSource = null
             importWave = null
+            clearSpeechFile(); clearSynthFile()
             mode = Mode.HOME
             save()
             changed("PLACED " + seconds(count.toLong()) + "s / " + importName)
@@ -2413,9 +2900,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
         preparePlayback()
     }
 
-    private fun work(text: String, action: Work, done: Runnable) {
+    private fun work(text: String, action: Work, done: Runnable) = work(text, action, false, done)
+
+    private fun work(text: String, action: Work, quiet: Boolean, done: Runnable) {
         busy = true
-        message = text
+        quietWork = quiet
+        if (!quiet) message = text
         instrument.invalidate()
         worker.execute {
             try {
@@ -2450,8 +2940,6 @@ class MainActivity : Activity(), AudioEngine.Listener {
         private const val TIMELINE_STEPS = 100
         private const val ZOOM_STEP = 0.8
         private const val ERROR_PADDING = 32
-        private const val NAME_PADDING_X = 24
-        private const val NAME_PADDING_Y = 20
         const val MENU_EFFECTS = 0
         const val MENU_ADD_SAMPLE = 1
         const val MENU_TEMPO = 2
@@ -2462,6 +2950,17 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val ADD_MICROPHONE = 0
         const val ADD_DEVICE = 1
         const val ADD_IMPORT = 2
+        const val ADD_SPEECH = 3
+        const val ADD_SYNTH = 4
+        const val SYNTH_PREVIEW = 6
+        const val SYNTH_ADD = 7
+        private const val SHIFT_ZOOM_MIN = Tape.RATE / 20
+        private const val FRAMES_PER_MS = Tape.RATE / 1000
+        const val SPEECH_TEXT = 0
+        const val SPEECH_VOICE = 1
+        const val SPEECH_PREVIEW = 2
+        const val SPEECH_ADD = 3
+        private const val SPEECH_LABEL_LENGTH = 24
         const val PROJECT_NEW = 0
         const val PROJECT_OPEN = 1
         const val PROJECT_EDIT = 2
@@ -2512,9 +3011,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val MIN_WOBBLE_RATE = 5
         const val MAX_WOBBLE_RATE = 200
         const val WOBBLE_RATE_PER_HZ = 10f
-        const val MAX_SHIFT_MS = 2000
+        const val MAX_SHIFT_MS = 1000
         const val MAX_RETUNE_MS = 500
-        const val MAX_NUDGE_MS = 100
+        const val MAX_NUDGE_MS = 200
         const val FAST_STEP = 5
         const val FX_SPEED = 0
         const val FX_PITCH = 1
@@ -2545,12 +3044,30 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val FX_WOBBLE_DEPTH = 26
         const val FX_TRIM_START = 27
         const val FX_TRIM_END = 28
+        const val FX_ROBOT_PROFILE = 29
+        const val FX_ROBOT_MORPH = 32
+        const val FX_ROBOT_MIX = 33
+        const val FX_DRIVE = 34
+        const val FX_CRUSH_BITS = 35
+        const val FX_CRUSH_RATE = 36
+        const val FX_BAND_PASS = 37
+        const val FX_HIGH_RESONANCE = 38
+        const val FX_LOW_RESONANCE = 39
+        const val FX_BAND_RESONANCE = 40
+        private const val LEGACY_ROBOT_SCALE = 5
         @JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Sync", "Project", "System", "Check the back")
         @JvmField val EXPORT_ITEMS = arrayOf("As MIDI", "As WAV", "As Project")
-        @JvmField val ADD_SAMPLE = arrayOf("Record microphone", "Record device", "Import sample")
+        @JvmField val ADD_SAMPLE = arrayOf("Record microphone", "Record device", "Import sample", "Text to speech", "Synth")
         @JvmField val PROJECT_ITEMS = arrayOf("New", "Open", "Edit", "Export", "Import")
         @JvmField val PROJECT_EDIT_ITEMS = arrayOf("Rename", "Color", "Delete")
-        @JvmField val PAGE_ACTIONS = arrayOf("Copy", "Swap", "Reset page")
+        const val PAGE_NOTE_NONE = 0
+        const val PAGE_NOTE_PASTED = 1
+        const val PAGE_NOTE_MOVED = 2
+        private const val PAGE_NOTE_MS = 1000L
+        const val OPTION_COPY = 0
+        const val OPTION_COPY_STACK = 1
+        const val OPTION_PASTE = 2
+        const val OPTION_ORDER = 3
         @JvmField val CASSETTE_NAMES = arrayOf(
             "Clear", "Smoke",
             "Blush", "Peach", "Butter", "Pistachio", "Seafoam", "Powder", "Lavender", "Rose",
@@ -2566,14 +3083,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
         private val RETIRED_CASSETTE_NAMES = arrayOf("Ruby" to "Laser", "Coral" to "Peach", "Tangerine" to "Blaze", "Lemon" to "Volt", "Lime" to "Toxic",
             "Mint" to "Seafoam", "Teal" to "Cyber", "Sky" to "Powder", "Ocean" to "Powder", "Grape" to "Lavender")
         private val OLD_CASSETTE_NAMES = arrayOf("Smoke", "Ruby", "Tangerine", "Lemon", "Mint", "Ocean", "Grape", "Bubblegum", "Clear", "Lime", "Teal", "Sky", "Coral", "Cocoa")
-        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH PASS", "LOW PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END")
+        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE")
         @JvmField val WOBBLE_MODES = arrayOf("Volume", "Pitch", "Speed")
-        @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low pass", "Nudge", "Chance", "Every Nth", "Wobble")
-        @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED")
+        @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass")
+        @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null)
         const val ALONE_REASON = "ADD FILTER, DELAY, DIST OR REVERB"
-        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.SHIFT, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
-        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH))
-        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("High pass"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Low pass"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"))
+        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
+        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE))
+        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"))
         const val SECRET_TRANS = 0
         const val SECRET_PRIDE = 1
         const val SECRET_SWEDEN = 2
@@ -2605,7 +3122,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
         private fun trackOnly(group: Int) = group == Sequencer.Effects.SWING || group == Sequencer.Effects.NUDGE
 
-        private fun transforms(group: Int) = group == Sequencer.Effects.SHIFT || group == Sequencer.Effects.SAMPLE || group == Sequencer.Effects.PITCH || group == Sequencer.Effects.AUTOTUNE
+        private fun transforms(group: Int) = group == Sequencer.Effects.SHIFT || group == Sequencer.Effects.SAMPLE || group == Sequencer.Effects.PITCH || group == Sequencer.Effects.AUTOTUNE || group == Sequencer.Effects.ROBOT
 
         @JvmStatic fun ordinal(value: Int): String {
             val tens = value % 100

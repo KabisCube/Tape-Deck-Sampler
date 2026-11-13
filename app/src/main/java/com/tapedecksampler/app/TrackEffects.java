@@ -8,7 +8,11 @@ public final class TrackEffects {
     private static final int[] DELAY_24THS = {3, 4, 6, 8, 9, 12, 16, 18, 24, 32, 36, 48, 72, 96};
     public static final int MAX_ECHOES = 8;
     private static final int MAX_DELAY_BUFFER = Tape.RATE * 16;
-    private static final int SOFT_CLIP = 1, HARD_CLIP = 2, FOLDBACK = 3, BITCRUSH = 4;
+    private static final int SOFT_CLIP = 1, HARD_CLIP = 2, FOLDBACK = 3;
+    public static final int BITCRUSH = 4;
+    public static final int MIN_CRUSH_BITS = 2, MAX_CRUSH_BITS = 16, DEFAULT_CRUSH_BITS = 8;
+    public static final int MIN_CRUSH_RATE = 1000, MAX_CRUSH_RATE = Tape.RATE, DEFAULT_CRUSH_RATE = 8000;
+    public static final int CRUSH_RATE_STEP = 500;
     private static final int[] COMB_LENGTHS = {1499, 1601, 1747, 1867};
     private static final int[] ALLPASS_LENGTHS = {241, 83};
     private static final float COMB_DAMPING = 0.7f, COMB_INPUT = 0.22f, COMB_FEEDBACK = 0.79f;
@@ -19,20 +23,23 @@ public final class TrackEffects {
     private static final int LEVEL_SMOOTHING_FRAMES = 2400;
     private static final double MIN_LEVEL_POWER = 1e-15, MAX_LEVEL_GAIN = 8;
     private static final int SOFT_DRIVE_RANGE = 15, HARD_DRIVE_RANGE = 25, FOLD_PERIOD = 4;
-    private static final int PCM_BITS = 15, MAX_CRUSH_BITS = 12, MAX_CRUSH_HOLD = 15;
+    private static final int PCM_BITS = 15, LEGACY_CRUSH_BITS_RANGE = 12, MAX_CRUSH_HOLD = 15;
+    private static final double BASE_FILTER_Q = Math.sqrt(.5), MAX_FILTER_Q = 8;
 
     private final float[][] combs = new float[COMB_LENGTHS.length][];
     private final int[] positions = new int[COMB_LENGTHS.length];
     private final float[] damping = new float[COMB_LENGTHS.length];
     private final float[][] allpass = new float[ALLPASS_LENGTHS.length][];
     private final int[] diffusion = new int[ALLPASS_LENGTHS.length];
-    private int crushCounter;
+    private double crushPhase = 1;
     private float held;
     private boolean wet;
     private double inputPower, outputPower;
     private int previousType, previousDrive, previousMix;
-    private int highPass = -1, lowPass = -1;
-    private float highCoefficient, lowCoefficient, highState, lowState;
+    private int previousBits, previousRate;
+    private final Filter highFilter = new Filter(Sequencer.Effects.HIGH_PASS);
+    private final Filter lowFilter = new Filter(Sequencer.Effects.LOW_PASS);
+    private final Filter bandFilter = new Filter(Sequencer.Effects.BAND_PASS);
     private float[] delay;
     private int delayPosition;
     private boolean delayActive;
@@ -45,6 +52,7 @@ public final class TrackEffects {
     public boolean prepareBlock(Sequencer.Effects controls) {
         if (controls.powered(Sequencer.Effects.HIGH_PASS) && controls.highPass > 0
                 || controls.powered(Sequencer.Effects.LOW_PASS) && controls.lowPass > 0
+                || controls.powered(Sequencer.Effects.BAND_PASS) && controls.bandPass > 0
                 || controls.powered(Sequencer.Effects.DISTORTION) && controls.distortion != 0 && controls.distortionMix > 0
                 || controls.powered(Sequencer.Effects.REVERB) && controls.reverb > 0
                 || controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0) return true;
@@ -65,10 +73,11 @@ public final class TrackEffects {
         float value = input;
         for (int group : controls.chain) {
             switch (group) {
-                case Sequencer.Effects.HIGH_PASS: value = highPassed(value, controls.powered(group) ? controls.highPass : 0); break;
-                case Sequencer.Effects.LOW_PASS: value = lowPassed(value, controls.powered(group) ? controls.lowPass : 0); break;
+                case Sequencer.Effects.HIGH_PASS: value = highFilter.process(value, controls.powered(group) ? controls.highPass : 0, controls.highResonance); break;
+                case Sequencer.Effects.LOW_PASS: value = lowFilter.process(value, controls.powered(group) ? controls.lowPass : 0, controls.lowResonance); break;
+                case Sequencer.Effects.BAND_PASS: value = bandFilter.process(value, controls.powered(group) ? controls.bandPass : 0, controls.bandResonance); break;
                 case Sequencer.Effects.DISTORTION:
-                    value = distortion(value, controls.powered(group) ? controls.distortion : 0, controls.drive, controls.distortionMix);
+                    value = distortion(value, controls.powered(group) ? controls.distortion : 0, controls.drive, controls.distortionMix, controls.crushBits, controls.crushRate);
                     break;
                 case Sequencer.Effects.REVERB: value = reverb(value, controls.powered(group) ? controls.reverb : 0); break;
                 case Sequencer.Effects.DELAY: value = delay(value, controls, bpm); break;
@@ -78,24 +87,48 @@ public final class TrackEffects {
         return value;
     }
 
-    private float highPassed(float input, int frequency) {
-        if (highPass != frequency) {
-            highPass = frequency; highState = 0;
-            highCoefficient = coefficient(highPass);
-        }
-        if (highPass <= 0) return input;
-        highState += highCoefficient * (input - highState);
-        return input - highState;
+    public static double resonanceQ(int resonance) {
+        return BASE_FILTER_Q * Math.pow(MAX_FILTER_Q / BASE_FILTER_Q, Math.max(0, Math.min(100, resonance)) / 100.0);
     }
 
-    private float lowPassed(float input, int frequency) {
-        if (lowPass != frequency) {
-            lowPass = frequency; lowState = 0;
-            lowCoefficient = coefficient(lowPass);
+    private static final class Filter {
+        private final int mode;
+        private int frequency = -1, resonance = -1;
+        private double b0, b1, b2, a1, a2, z1, z2, state, smoothing;
+
+        Filter(int mode) { this.mode = mode; }
+
+        float process(float input, int cutoff, int peak) {
+            if (frequency != cutoff || resonance != peak) configure(cutoff, peak);
+            if (frequency <= 0) return input;
+            if (resonance == 0 && mode != Sequencer.Effects.BAND_PASS) {
+                state += smoothing * (input - state);
+                return (float) (mode == Sequencer.Effects.HIGH_PASS ? input - state : state);
+            }
+            double output = b0 * input + z1;
+            z1 = b1 * input - a1 * output + z2;
+            z2 = b2 * input - a2 * output;
+            return (float) output;
         }
-        if (lowPass <= 0) return input;
-        lowState += lowCoefficient * (input - lowState);
-        return lowState;
+
+        private void configure(int cutoff, int peak) {
+            frequency = cutoff; resonance = peak;
+            z1 = z2 = state = 0;
+            smoothing = coefficient(cutoff);
+            double angle = 2 * Math.PI * Math.max(0, Math.min(MAX_FILTER_HZ, cutoff)) / Tape.RATE;
+            double cosine = Math.cos(angle), sine = Math.sin(angle);
+            double alpha = sine / (2 * resonanceQ(peak)), scale = 1 + alpha;
+            if (mode == Sequencer.Effects.HIGH_PASS) {
+                b0 = (1 + cosine) / (2 * scale); b1 = -(1 + cosine) / scale; b2 = b0;
+            } else if (mode == Sequencer.Effects.LOW_PASS) {
+                b0 = (1 - cosine) / (2 * scale); b1 = (1 - cosine) / scale; b2 = b0;
+            } else {
+                b0 = sine / (2 * scale); b1 = 0; b2 = -b0;
+            }
+            a1 = -2 * cosine / scale; a2 = (1 - alpha) / scale;
+        }
+
+        void reset() { frequency = resonance = -1; z1 = z2 = state = 0; }
     }
 
     private float delay(float input, Sequencer.Effects controls, int bpm) {
@@ -156,23 +189,24 @@ public final class TrackEffects {
     }
 
     public float process(float input, int type, int drive, int mix, int reverb) {
-        return reverb(distortion(input, type, drive, mix), reverb);
+        return reverb(distortion(input, type, drive, mix, legacyCrushBits(drive), legacyCrushRate(drive)), reverb);
     }
 
-    private float distortion(float input, int type, int drive, int mix) {
+    private float distortion(float input, int type, int drive, int mix, int bits, int rate) {
         float value = input;
         if (type != 0 && mix > 0) {
-            if (type != previousType || drive != previousDrive || mix != previousMix) {
+            if (type != previousType || drive != previousDrive || mix != previousMix || bits != previousBits || rate != previousRate) {
                 inputPower = outputPower = 0;
-                held = 0; crushCounter = 0;
+                held = 0; crushPhase = 1;
             }
             float blend = Math.max(0, Math.min(100, mix)) / 100f;
-            value = input + (distort(input, type, drive) - input) * blend;
+            value = input + (distort(input, type, drive, bits, rate) - input) * blend;
             inputPower += (input * input - inputPower) / LEVEL_SMOOTHING_FRAMES;
             outputPower += (value * value - outputPower) / LEVEL_SMOOTHING_FRAMES;
             if (outputPower > MIN_LEVEL_POWER) value *= (float) Math.min(MAX_LEVEL_GAIN, Math.sqrt(inputPower / outputPower));
         }
         previousType = type; previousDrive = drive; previousMix = mix;
+        previousBits = bits; previousRate = rate;
         return value;
     }
 
@@ -217,14 +251,26 @@ public final class TrackEffects {
         }
     }
 
-    private float distort(float sample, int type, int drive) {
+    public static int legacyCrushBits(int drive) {
+        return PCM_BITS + 1 - Math.round(Math.max(0, Math.min(100, drive)) / 100f * LEGACY_CRUSH_BITS_RANGE);
+    }
+
+    public static int legacyCrushRate(int drive) {
+        return Tape.RATE / (1 + Math.round(Math.max(0, Math.min(100, drive)) / 100f * MAX_CRUSH_HOLD));
+    }
+
+    public static float crushed(float sample, int bits) {
+        int levels = 1 << (Math.max(MIN_CRUSH_BITS, Math.min(MAX_CRUSH_BITS, bits)) - 1);
+        return Math.round(Math.max(-1, Math.min(1, sample)) * levels) / (float) levels;
+    }
+
+    private float distort(float sample, int type, int drive, int bits, int rate) {
         if (type != BITCRUSH) return shape(sample, type, drive);
-        float amount = Math.max(0, Math.min(100, drive)) / 100f;
-        if (crushCounter-- <= 0) {
-            int levels = 1 << (PCM_BITS - Math.round(amount * MAX_CRUSH_BITS));
-            held = Math.round(Math.max(-1, Math.min(1, sample)) * levels) / (float) levels;
-            crushCounter = Math.round(amount * MAX_CRUSH_HOLD);
+        if (crushPhase >= 1) {
+            held = crushed(sample, bits);
+            crushPhase -= 1;
         }
+        crushPhase += Math.max(MIN_CRUSH_RATE, Math.min(MAX_CRUSH_RATE, rate)) / (double) Tape.RATE;
         return held;
     }
 
@@ -239,9 +285,9 @@ public final class TrackEffects {
         resetReverb();
         if (delay != null) Arrays.fill(delay, 0);
         delayPosition = 0; delayActive = false;
-        highPass = lowPass = -1; highState = lowState = 0;
-        held = 0; crushCounter = 0;
+        highFilter.reset(); lowFilter.reset(); bandFilter.reset();
+        held = 0; crushPhase = 1;
         inputPower = outputPower = 0;
-        previousType = previousDrive = previousMix = -1;
+        previousType = previousDrive = previousMix = previousBits = previousRate = -1;
     }
 }

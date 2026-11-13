@@ -6,7 +6,7 @@ import java.util.Arrays;
 
 public final class EffectsTest {
     private static int checks;
-    private static final int[] OPTIONAL = {Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.DISTORTION, Sequencer.Effects.ENVELOPE, Sequencer.Effects.REVERB};
+    private static final int[] OPTIONAL = {Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.DISTORTION, Sequencer.Effects.ENVELOPE, Sequencer.Effects.REVERB};
 
     public static void main(String[] args) throws Exception {
         short[] tone = tone(440, Tape.RATE * 2);
@@ -88,6 +88,8 @@ public final class EffectsTest {
         effects.reset();
         check(effects.process(0, 0, 0, 80) == 0, "Reset removes reverb tails");
         extendedEffects();
+        resonantFilters();
+        distortionTuning();
         powerSwitches();
         groupResets();
         effectStack();
@@ -192,6 +194,76 @@ public final class EffectsTest {
         check(effects.process(0, controls, 120) == 0, "Reset clears delay tails");
     }
 
+    private static void resonantFilters() {
+        Sequencer.Effects band = new Sequencer.Effects();
+        band.bandPass = 1000;
+        double center = power(band, 1000);
+        check(center > power(band, 100) * 20 && center > power(band, 10000) * 20, "Band-pass keeps its center and attenuates both sides");
+        for (int group : new int[]{Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS}) {
+            Sequencer.Effects controls = new Sequencer.Effects();
+            if (group == Sequencer.Effects.HIGH_PASS) controls.highPass = 1000;
+            else if (group == Sequencer.Effects.LOW_PASS) controls.lowPass = 1000;
+            else controls.bandPass = 1000;
+            double neutral = power(controls, 1000);
+            if (group == Sequencer.Effects.HIGH_PASS) controls.highResonance = 100;
+            else if (group == Sequencer.Effects.LOW_PASS) controls.lowResonance = 100;
+            else controls.bandResonance = 100;
+            check(power(controls, 1000) > neutral * 20, "Resonance emphasizes the selected filter frequency");
+            Sequencer.Effects copied = controls.copy();
+            check(copied.sameGroup(group, controls), "Filter copies include resonance");
+            copied.resetGroup(group);
+            check(!copied.powered(group) && !copied.sameGroup(group, controls), "Filter reset clears cutoff and resonance");
+            copied.restoreGroup(group, controls);
+            check(copied.sameGroup(group, controls), "Filter undo restores cutoff and resonance");
+            controls.power(group, false);
+            TrackEffects filter = new TrackEffects();
+            check(filter.process(.25f, controls, Sequencer.DEFAULT_BPM) == .25f, "Filter power bypasses resonance exactly");
+            for (int cutoff : new int[]{20, 1000, 20000}) {
+                controls.power(group, true);
+                if (group == Sequencer.Effects.HIGH_PASS) controls.highPass = cutoff;
+                else if (group == Sequencer.Effects.LOW_PASS) controls.lowPass = cutoff;
+                else controls.bandPass = cutoff;
+                filter.reset();
+                for (int frame = 0; frame < Tape.RATE / 10; frame++) checkFinite(filter.process(frame == 0 ? 1 : 0, controls, Sequencer.DEFAULT_BPM));
+            }
+        }
+        Sequencer.Effects previous = new Sequencer.Effects();
+        previous.restoreOrder(new int[]{Sequencer.Effects.DISTORTION, Sequencer.Effects.LOW_PASS, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB});
+        check(Arrays.equals(previous.chain, new int[]{Sequencer.Effects.DISTORTION, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB}), "Five-effect projects retain their order when Band-pass is added");
+    }
+
+    private static void distortionTuning() {
+        Sequencer.Effects controls = new Sequencer.Effects();
+        controls.distortion = TrackEffects.BITCRUSH;
+        controls.crushRate = TrackEffects.MAX_CRUSH_RATE;
+        controls.crushBits = TrackEffects.MAX_CRUSH_BITS;
+        double clean = distortionError(controls);
+        controls.crushBits = TrackEffects.MIN_CRUSH_BITS;
+        check(distortionError(controls) > clean * 100, "Lower bit depth increases quantization independently of drive");
+        controls.crushBits = TrackEffects.MAX_CRUSH_BITS;
+        controls.crushRate = TrackEffects.MIN_CRUSH_RATE;
+        check(distortionError(controls) > clean * 100, "Lower sample rate adds sample holding independently of bit depth");
+        Sequencer.Effects copied = controls.copy();
+        check(copied.sameGroup(Sequencer.Effects.DISTORTION, controls), "Copy retains bit depth and sample rate");
+        copied.crushBits--;
+        check(!copied.sameGroup(Sequencer.Effects.DISTORTION, controls), "Bit depth participates in pad inheritance");
+        copied.restoreGroup(Sequencer.Effects.DISTORTION, controls);
+        check(copied.crushBits == controls.crushBits && copied.crushRate == controls.crushRate, "Undo restores bit depth and sample rate");
+    }
+
+    private static double distortionError(Sequencer.Effects controls) {
+        TrackEffects effect = new TrackEffects();
+        double error = 0;
+        short[] source = tone(440, Tape.RATE);
+        for (int i = 0; i < source.length; i++) {
+            float input = source[i] / 32768f;
+            float output = effect.process(input, controls, Sequencer.DEFAULT_BPM);
+            checkFinite(output);
+            if (i >= Tape.RATE / 4) error += (output - input) * (output - input);
+        }
+        return error;
+    }
+
     private static double power(Sequencer.Effects controls, int frequency) {
         TrackEffects effects = new TrackEffects();
         short[] signal = tone(frequency, Tape.RATE);
@@ -265,7 +337,7 @@ public final class EffectsTest {
         }
         Sequencer.Effects migrated = new Sequencer.Effects();
         migrated.restoreOrder(new int[]{Sequencer.Effects.HIGH_PASS, reverb, distortion, delay});
-        check(Arrays.equals(migrated.chain, new int[]{Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, reverb, distortion, delay}), "Saved Filters order keeps High pass before Low pass");
+        check(Arrays.equals(migrated.chain, new int[]{Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, reverb, distortion, delay}), "Saved Filters order keeps High pass before Low pass");
         Sequencer.Effects legacyOn = new Sequencer.Effects(); legacyOn.lowPass = 900;
         legacyOn.effectPower = legacyOn.effectPowerSet = 1 << Sequencer.Effects.HIGH_PASS;
         legacyOn.splitGroups(); legacyOn.normalize();

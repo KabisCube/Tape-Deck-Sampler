@@ -62,8 +62,92 @@ public final class PitchCorrectorTest {
         System.arraycopy(tone(515, Tape.RATE), 0, melody, Tape.RATE, Tape.RATE);
         short[] corrected = PitchCorrector.process(melody, controls);
         check(Math.abs(frequency(corrected, 12000, 36000) - 440) < 2 && Math.abs(frequency(corrected, 60000, 84000) - 523.2511) < 2, "Correction follows changing notes within a sample");
+        hardLock(controls);
+        vocalBoundaries(controls);
         integration(dry);
         System.out.println(checks + " pitch correction checks passed");
+    }
+
+    private static void hardLock(Sequencer.Effects controls) {
+        for (double target : new double[]{110, 220, 440}) {
+            short[] source = new short[Tape.RATE * 3];
+            double phase = 0;
+            for (int i = 0; i < source.length; i++) {
+                double time = i / (double) Tape.RATE;
+                double cents = -25 + 20 * Math.sin(2 * Math.PI * 6 * time);
+                phase += 2 * Math.PI * target * Math.pow(2, cents / 1200) / Tape.RATE;
+                source[i] = (short) Math.round(20000 * Math.sin(phase));
+            }
+            short[] tuned = PitchCorrector.process(source, controls);
+            double last = -1, totalError = 0, worstError = 0;
+            int periods = 0;
+            for (int i = Tape.RATE / 2; i < tuned.length - Tape.RATE / 2; i++) {
+                if (tuned[i - 1] > 0 || tuned[i] <= 0) continue;
+                double crossing = i - 1 - tuned[i - 1] / (double) (tuned[i] - tuned[i - 1]);
+                if (last >= 0) {
+                    double cents = Math.abs(1200 * Math.log(Tape.RATE / (crossing - last) / target) / Math.log(2));
+                    totalError += cents;
+                    worstError = Math.max(worstError, cents);
+                    periods++;
+                }
+                last = crossing;
+            }
+            check(periods > target, "Hard tuning retains a continuous vocal pitch");
+            check(totalError / periods < 1 && worstError < 3, "Instant retune removes vibrato at " + target + " Hz: " + worstError + " cents maximum");
+        }
+    }
+
+    private static void vocalBoundaries(Sequencer.Effects controls) {
+        for (double fundamental : new double[]{75, 110, 180, 220, 300, 440}) {
+            short[] source = vowel(fundamental, Tape.RATE * 3);
+            short[] tuned = PitchCorrector.process(source, controls);
+            check(tuned.length == source.length, "Vocal correction retains the complete sample");
+            check(maxJump(tuned) <= maxJump(source) * 1.5, "Vocal grain boundaries do not introduce clicks at " + fundamental + " Hz");
+            int sourcePeak = 0, tunedPeak = 0;
+            for (int i = 0; i < source.length; i++) {
+                sourcePeak = Math.max(sourcePeak, Math.abs((int) source[i]));
+                tunedPeak = Math.max(tunedPeak, Math.abs((int) tuned[i]));
+            }
+            check(tunedPeak <= sourcePeak, "Vocal correction does not add clipping or boost peaks");
+        }
+        int syllable = Tape.RATE / 2, gap = Tape.RATE / 3;
+        short[] phrase = new short[syllable * 2 + gap];
+        System.arraycopy(tone(173, syllable), 0, phrase, 0, syllable);
+        System.arraycopy(tone(211, syllable), 0, phrase, syllable + gap, syllable);
+        short[] tuned = PitchCorrector.process(phrase, controls);
+        int margin = Tape.RATE / 10;
+        check(Arrays.equals(Arrays.copyOfRange(phrase, syllable + margin, syllable + gap - margin),
+                Arrays.copyOfRange(tuned, syllable + margin, syllable + gap - margin)), "Pauses between syllables remain silent");
+    }
+
+    private static short[] vowel(double fundamental, int length) {
+        double[] signal = new double[length];
+        double[] formants = {700, 1200, 2600};
+        double bandwidth = 80, phase = 0, peak = 0;
+        Random random = new Random(1);
+        for (int i = 0; i < signal.length; i++) {
+            double time = i / (double) Tape.RATE;
+            double semitones = .8 * Math.sin(2 * Math.PI * .7 * time) + .25 * Math.sin(2 * Math.PI * 6 * time);
+            double hz = fundamental * Math.pow(2, semitones / 12);
+            phase += 2 * Math.PI * hz / Tape.RATE;
+            double value = 0;
+            for (int harmonic = 1; harmonic * hz < 6000; harmonic++) {
+                double amplitude = 0;
+                for (double formant : formants) amplitude += 1 / (1 + Math.pow((harmonic * hz - formant) / bandwidth, 2));
+                value += Math.cos(phase * harmonic) * amplitude / Math.sqrt(harmonic);
+            }
+            signal[i] = value + .01 * random.nextGaussian();
+            peak = Math.max(peak, Math.abs(signal[i]));
+        }
+        short[] samples = new short[length];
+        for (int i = 0; i < length; i++) samples[i] = (short) Math.round(28000 * signal[i] / peak);
+        return samples;
+    }
+
+    private static int maxJump(short[] samples) {
+        int largest = 0;
+        for (int i = 1; i < samples.length; i++) largest = Math.max(largest, Math.abs(samples[i] - samples[i - 1]));
+        return largest;
     }
 
     private static void integration(short[] source) throws Exception {
@@ -85,7 +169,7 @@ public final class PitchCorrectorTest {
             check(Math.abs(frequency(audio, 12000, 60000) - 440) < 2, "Background preparation corrects an already playing voice");
             track.autoKey = 11; track.autoScale = 1;
             seq.stop(); seq.preview(0); seq.render(audio);
-            check(Math.abs(frequency(audio, 24000, 72000) - 430) < 1, "Playback bypasses correction prepared for stale settings");
+            check(Math.abs(frequency(audio, 24000, 72000) - 440) < 2, "Playback holds the last render until new settings are prepared");
             track.autoKey = 0; track.autoScale = 0;
             track.power(Sequencer.Effects.AUTOTUNE, false);
             seq.stop(); seq.preview(0); seq.render(audio);

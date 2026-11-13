@@ -1,0 +1,51 @@
+eSpeak NG 1.52.0
+Source: https://github.com/espeak-ng/espeak-ng/tree/1.52.0
+Archive: https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz
+Archive SHA-256: bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23
+
+The complete, unmodified source archive is included alongside this notice.
+The app builds libespeak-ng, its Klatt synthesizer and UCD Tools from that
+archive. The new Android bridge is app/src/main/cpp/RetroSpeech.c.
+The engine, English pronunciation data and voice variants are licensed
+under GNU GPL version 3 or later. The bridge and application integration
+use the same GPL version 3 or later license as Tape Deck Sampler.
+
+Copyright holders include Jonathan Duddington, Reece H. Dunn and the
+eSpeak NG contributors. Original per-file copyright notices and licenses
+are preserved in the source archive. See COPYING and src/ucd-tools/COPYING.
+Unicode data is covered by the Unicode Data Files and Software License;
+see COPYING.UCD and src/ucd-tools/COPYING.UCD in the archive.
+
+The archive also preserves Apache-2.0 Android bindings (COPYING.APACHE)
+and BSD-2-Clause Windows compatibility code (COPYING.BSD2). Neither is
+compiled by this application. No upstream Android Java/JNI wrapper is used.
+MBROLA, Sonic, asynchronous audio and SpeechPlayer are disabled.
+
+The English runtime data in app/src/main/assets/speech/espeak-data.zip
+is a subset of the data from the official 1.52.0 Android release:
+https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-1.52.0-signed.apk
+It contains en_dict, intonations, phondata, phonindex, phontab, English
+language definitions and the klatt, robosoft, croak, f1 and whisper
+voice variants, without changes. The grandma variant, displayed as
+"Old lady", is copied unchanged from espeak-ng-data/voices/!v/grandma
+in the included 1.52.0 source archive, under the same GPL-3.0-or-later
+license. It replaces the previously packaged klatt2 variant.
+Dictionary and phoneme source, build scripts, and voice definitions are
+in the included source archive under dictsource, phsource, cmake and
+espeak-ng-data. The upstream data target rebuilds these files on a desktop
+host; see the archived documentation.
+Runtime-data SHA-256: b79e59e612f1b3c786ac615769dd18871f9d570e08a7a606e7050ae3dd9ed445
+
+Build using gradlew :app:assembleDebug with JDK 17, SDK 35,
+NDK 28.2.13676358 and CMake 3.22.1. All speech engine inputs are local;
+no speech service, downloaded voice or network permission is required.
+When distributing an APK, also provide this application's corresponding
+source, including this archive and the bridge/build files, under GPLv3.
+
+S.A.M. and DECtalk code and voices are not included.
+
+The Android NDK's compiler runtime uses Apache-2.0 with LLVM exceptions.
+Legacy compiler-rt portions are also available under MIT; that option is
+used for those portions. The corresponding upstream notices, including
+their alternative NCSA license, are retained in the app's assets under
+licenses/LLVM-compiler-rt.txt. These licenses are GPLv3-compatible.

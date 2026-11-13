@@ -31,13 +31,22 @@ public final class DeviceChecks extends Instrumentation {
     private boolean padPitchOnly;
     private boolean effectsOnly;
     private boolean pagesOnly;
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); buttonsOnly = arguments != null && "buttons".equals(arguments.getString("scope")); tracksOnly = arguments != null && "tracks".equals(arguments.getString("scope")); padPitchOnly = arguments != null && "padpitch".equals(arguments.getString("scope")); effectsOnly = arguments != null && "effects".equals(arguments.getString("scope")); pagesOnly = arguments != null && "pages".equals(arguments.getString("scope")); start(); }
+    private boolean speechOnly;
+    private boolean filtersOnly;
+    private boolean robotOnly;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); filtersOnly = arguments != null && "filters".equals(arguments.getString("scope")); robotOnly = arguments != null && "robot".equals(arguments.getString("scope")); buttonsOnly = arguments != null && "buttons".equals(arguments.getString("scope")); tracksOnly = arguments != null && "tracks".equals(arguments.getString("scope")); padPitchOnly = arguments != null && "padpitch".equals(arguments.getString("scope")); effectsOnly = arguments != null && "effects".equals(arguments.getString("scope")); pagesOnly = arguments != null && "pages".equals(arguments.getString("scope")); speechOnly = arguments != null && "speech".equals(arguments.getString("scope")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
             app = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             ready();
-            if (pagesOnly) {
+            if (filtersOnly) {
+                stage("Filter and distortion controls"); filterMenus(); stage("Pad lighting"); padLights(); stage("Text overlap audit"); textAudit();
+            } else if (robotOnly) {
+                stage("Robot voices"); robotMenus();
+            } else if (speechOnly) {
+                stage("Retro speech"); speech();
+            } else if (pagesOnly) {
                 stage("Secret flags"); flagSettings(); stage("Battery bay"); batteryBay(); stage("Sequence pages"); pages();
             } else if (effectsOnly) {
                 stage("Live and pad effects"); effects(); stage("Pad Pitch with track Auto Tune"); padPitch(); stage("Text overlap audit"); textAudit();
@@ -48,7 +57,7 @@ public final class DeviceChecks extends Instrumentation {
             } else if (tracksOnly) {
                 stage("Track mute"); trackHolds();
             } else {
-                stage("Controls"); controls(); stage("Track mute"); trackHolds(); stage("Swing"); swing(); stage("Clap sync"); sync(); stage("Timeline"); timeline(); stage("Import"); imports(); stage("Device capture import"); deviceCaptureImport();
+                stage("Controls"); controls(); stage("Track mute"); trackHolds(); stage("Swing"); swing(); stage("Clap sync"); sync(); stage("Timeline"); timeline(); stage("Import"); imports(); stage("Retro speech"); speech(); stage("Device capture import"); deviceCaptureImport();
                 stage("Live and pad effects"); effects(); stage("System settings"); settings(); stage("Battery bay"); batteryBay(); stage("Named sessions"); sessions(); stage("Project import"); projectImport(); stage("Sequence pages"); pages(); stage("Microphone"); microphone(); stage("Text overlap audit"); textAudit();
             }
             main(() -> { app.mode = MainActivity.Mode.HOME; app.instrument.invalidate(); });
@@ -58,6 +67,270 @@ public final class DeviceChecks extends Instrumentation {
         } catch (Throwable e) {
             result.putString("stream", "FAILED: " + android.util.Log.getStackTraceString(e)); finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    private void filterMenus() throws Exception {
+        main(() -> {
+            app.mode = MainActivity.Mode.HOME; app.selectTrack(0); app.sequencer.stop(); app.sequencer.resetEffects(0);
+            effectsMenu(); addGroup(Sequencer.Effects.BAND_PASS);
+            check(app.effectGroup == Sequencer.Effects.BAND_PASS && app.effectItems().length == 3, "Band-pass opens center and resonance controls");
+            app.selection = 1; app.confirm(); app.wheel(75); app.confirm();
+            check(app.sequencer.tracks[0].bandResonance == 75, "Band-pass resonance edits reach the engine");
+            effectParameter(MainActivity.FX_HIGH_RESONANCE); app.wheel(60); app.confirm();
+            effectParameter(MainActivity.FX_LOW_RESONANCE); app.wheel(40); app.confirm();
+            effectParameter(MainActivity.FX_DRIVE); app.wheel(10); app.confirm();
+            check(app.sequencer.tracks[0].drive == 50, "Distortion drive is editable");
+            effectParameter(MainActivity.FX_DISTORTION); app.wheel(TrackEffects.DISTORTIONS.length); app.confirm();
+            check(!app.effectRowEnabled(1) && app.effectRowEnabled(2) && app.effectRowEnabled(3), "Bitcrush enables bit depth and rate and disables drive");
+            app.selection = 2; app.confirm(); app.wheel(-3); app.confirm();
+            app.selection = 3; app.confirm(); app.wheel(-2); app.confirm();
+            check(app.sequencer.tracks[0].crushBits == 5 && app.sequencer.tracks[0].crushRate == 7000, "Bitcrush bit depth and sample rate edit independently");
+            app.selection = 2; app.confirm(); app.wheel(100); app.cancel();
+            check(app.sequencer.tracks[0].crushBits == 5, "Cancel restores bit depth");
+        });
+        ready(); restart();
+        main(() -> {
+            Sequencer.Track controls = app.sequencer.tracks[0];
+            check(controls.bandPass > 0 && controls.bandResonance == 75 && controls.highResonance == 60 && controls.lowResonance == 40, "All filter settings survive reopening");
+            check(controls.crushBits == 5 && controls.crushRate == 7000 && controls.drive == 50, "Distortion tuning survives reopening");
+            try {
+                java.lang.reflect.Method read = MainActivity.class.getDeclaredMethod("readEffects", org.json.JSONObject.class, Sequencer.Effects.class);
+                read.setAccessible(true);
+                org.json.JSONObject previous = new org.json.JSONObject().put("fxVersion", 2).put("highPass", 1000).put("lowPass", 8000)
+                        .put("distortion", TrackEffects.BITCRUSH).put("drive", 40).put("effectPower", 0).put("effectPowerSet", 1 << Sequencer.Effects.HIGH_PASS)
+                        .put("chain", new org.json.JSONArray(new int[]{Sequencer.Effects.DELAY, Sequencer.Effects.LOW_PASS, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.REVERB}));
+                Sequencer.Effects migrated = new Sequencer.Effects(); read.invoke(app, previous, migrated);
+                check(!migrated.powered(Sequencer.Effects.HIGH_PASS) && migrated.powered(Sequencer.Effects.LOW_PASS), "Five-effect projects retain separate filter power states");
+                check(migrated.crushBits == TrackEffects.legacyCrushBits(40) && migrated.crushRate == TrackEffects.legacyCrushRate(40), "Old Bitcrush drive migrates to its original bit depth and rate");
+                check(migrated.chain[0] == Sequencer.Effects.DELAY && migrated.chain[1] == Sequencer.Effects.LOW_PASS, "Saved effect order survives Band-pass migration");
+            } catch (Exception e) { throw new AssertionError(e); }
+            app.mode = MainActivity.Mode.EFFECTS; app.effectGroup = Sequencer.Effects.DISTORTION; app.selection = 0;
+        });
+        capture("distortion-controls.png");
+    }
+
+    private void padLights() throws Exception {
+        java.lang.reflect.Method draw = InstrumentView.class.getDeclaredMethod("pads", Canvas.class);
+        draw.setAccessible(true);
+        main(() -> {
+            app.audio.stop(); app.sequencer.stop(); app.mode = MainActivity.Mode.HOME; app.selectTrack(0);
+            app.sequencer.tracks[0].steps = 0;
+            app.sequencer.editStep(0, 1).reverb = 50;
+            Bitmap bitmap = Bitmap.createBitmap(400, 860, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            try {
+                int indicatorX = 161, indicatorY = (int) InstrumentView.PAD_TOP + 9;
+                draw.invoke(app.instrument, canvas); int disabled = bitmap.getPixel(indicatorX, indicatorY);
+                app.sequencer.resetStep(0, 1); draw.invoke(app.instrument, canvas);
+                check(disabled == bitmap.getPixel(indicatorX, indicatorY), "Disabled pad effects use the same unlit indicator as an empty pad");
+                app.sequencer.editStep(0, 1).reverb = 50; app.sequencer.tracks[0].steps = 1 << 1;
+                draw.invoke(app.instrument, canvas);
+                check(disabled != bitmap.getPixel(indicatorX, indicatorY), "Re-enabling the pad lights its effect indicator");
+                app.mode = MainActivity.Mode.PAGES; app.sequencer.selectPage(1);
+                int centerX = 153, centerY = (int) InstrumentView.PAD_TOP + 24;
+                draw.invoke(app.instrument, canvas); int stopped = bitmap.getPixel(centerX, centerY);
+                app.sequencer.play(); app.sequencer.render(new short[64]); draw.invoke(app.instrument, canvas);
+                int playing = bitmap.getPixel(centerX, centerY);
+                check(stopped != playing, "PAGES adds the normal soft glow to the playing page");
+                app.sequencer.selectPage(2); draw.invoke(app.instrument, canvas);
+                check(playing == bitmap.getPixel(centerX, centerY), "Page glow follows playback while another page is selected");
+                app.sequencer.stop();
+            } catch (Exception e) { throw new AssertionError(e); }
+            finally { bitmap.recycle(); }
+        });
+    }
+
+    private void speech() throws Exception {
+        check(Arrays.asList(MainActivity.ADD_SAMPLE).contains("Text to speech"), "Speech is available in Add sample");
+        check(Arrays.asList(RetroSpeech.INSTANCE.getVoices()).contains("Old lady") && !Arrays.asList(RetroSpeech.INSTANCE.getVoices()).contains("Klatt 2"), "Old lady replaces Klatt 2 in the voice menu");
+        java.util.HashSet<Integer> hashes = new java.util.HashSet<>();
+        for (int voice = 0; voice < RetroSpeech.INSTANCE.getVoices().length; voice++) {
+            File wave = RetroSpeech.INSTANCE.synthesize(app, "Hello, tape deck sampler!", voice);
+            try {
+                SampleDecoder.Source source = SampleDecoder.inspect(app, Uri.fromFile(wave));
+                check(source.frames > Tape.RATE / 2 && source.frames <= Tape.LENGTH, "Each voice produces bounded audio");
+                short[] samples = SampleDecoder.decode(app, source, 0, source.frames);
+                long energy = 0;
+                for (short sample : samples) energy += Math.abs((int) sample);
+                check(energy > samples.length, "Each voice produces audible PCM");
+                hashes.add(Arrays.hashCode(samples));
+            } finally { wave.delete(); }
+        }
+        check(hashes.size() == RetroSpeech.INSTANCE.getVoices().length, "All voice presets produce different speech");
+        for (String input : new String[]{"", "   ", String.join("", java.util.Collections.nCopies(RetroSpeech.MAX_TEXT_LENGTH + 1, "a")), "\u2603"}) {
+            boolean rejected = false;
+            try { RetroSpeech.INSTANCE.synthesize(app, input, 0); } catch (java.io.IOException expected) { rejected = true; }
+            check(rejected, "Invalid speech input is rejected");
+        }
+        boolean tooLong = false;
+        String limitResult;
+        try {
+            String alphabet = "a b c d e f g h i j k l m n o p q r s t u v w x y z ";
+            File longSpeech = RetroSpeech.INSTANCE.synthesize(app, String.join("", java.util.Collections.nCopies(4, alphabet)), 0);
+            try { limitResult = "Generated " + SampleDecoder.inspect(app, Uri.fromFile(longSpeech)).frames + " frames"; }
+            finally { longSpeech.delete(); }
+        } catch (java.io.IOException expected) {
+            limitResult = expected.getMessage();
+            tooLong = limitResult.contains("20 seconds");
+        }
+        check(tooLong, "Long speech is rejected without truncation: " + limitResult);
+        File wave = RetroSpeech.INSTANCE.synthesize(app, "Ready to sample.", 0);
+        try {
+            main(() -> app.decode(Uri.fromFile(wave), "Retro speech test"));
+            ready();
+            check(app.mode == MainActivity.Mode.IMPORT_START && app.importSource != null, "Generated speech enters sample trimming");
+            main(() -> app.confirm());
+            main(() -> app.confirm());
+            ready();
+            check(app.mode == MainActivity.Mode.IMPORT_POSITION, "Generated speech reaches tape placement");
+            main(() -> { app.cancel(); app.cancel(); app.cancel(); });
+        } finally { wave.delete(); }
+        speechMenus();
+    }
+
+    private void robotMigration() throws Exception {
+        java.lang.reflect.Method read = MainActivity.class.getDeclaredMethod("readEffects", org.json.JSONObject.class, Sequencer.Effects.class);
+        java.lang.reflect.Method mask = MainActivity.class.getDeclaredMethod("groupMask", org.json.JSONObject.class, String.class);
+        java.lang.reflect.Method write = MainActivity.class.getDeclaredMethod("effectData", Sequencer.Effects.class);
+        read.setAccessible(true); mask.setAccessible(true); write.setAccessible(true);
+        int tune = 1 << Sequencer.Effects.AUTOTUNE, robot = 1 << Sequencer.Effects.ROBOT;
+        org.json.JSONObject legacy = new org.json.JSONObject().put("fxVersion", 99).put("autoScale", PitchCorrector.SCALES.length)
+                .put("autoKey", 4).put("autoOctave", 4).put("autoStrength", 100).put("autoMix", 100)
+                .put("effectPower", tune).put("effectPowerSet", tune).put("custom", tune);
+        Sequencer.Effects migrated = new Sequencer.Effects();
+        read.invoke(app, legacy, migrated);
+        check(migrated.hasRobot() && !migrated.hasAutotune(), "Legacy Robot moves out of Autotune");
+        check(migrated.robotProfile == RobotEffect.ROBOT, "Migration selects the Robot voice");
+        check(((Integer) mask.invoke(app, legacy, "custom") & robot) != 0, "Legacy pad Robot overrides remain independent");
+        org.json.JSONObject saved = (org.json.JSONObject) write.invoke(app, migrated);
+        Sequencer.Effects restored = new Sequencer.Effects(); read.invoke(app, saved, restored);
+        check(restored.sameGroup(Sequencer.Effects.ROBOT, migrated) && restored.sameGroup(Sequencer.Effects.AUTOTUNE, migrated), "Migrated Robot survives saving and reopening");
+        legacy.put("effectPower", 0); read.invoke(app, legacy, migrated);
+        check(!migrated.hasRobot(), "Migration preserves disabled Robot power");
+        int[] profiles = {RobotEffect.ROBOT, RobotEffect.ROBOT, RobotEffect.GIANT, RobotEffect.CHIP, RobotEffect.WHISPER, RobotEffect.ROBOT, RobotEffect.ROBOT, RobotEffect.ROBOT};
+        for (int profile = 0; profile < profiles.length; profile++) {
+            org.json.JSONObject previous = new org.json.JSONObject().put("robotProfile", profile).put("robotMix", 100);
+            read.invoke(app, previous, migrated);
+            check(migrated.robotProfile == profiles[profile] && migrated.hasRobot(), "Previous voice profiles migrate with Robot enabled");
+            saved = (org.json.JSONObject) write.invoke(app, migrated);
+            check(saved.getInt("robotVersion") == RobotEffect.PROFILE_VERSION, "Saving records the consolidated profile version");
+            read.invoke(app, saved, restored);
+            check(restored.sameGroup(Sequencer.Effects.ROBOT, migrated), "Consolidated voices survive saving and reopening");
+        }
+    }
+
+    private void robotMenus() throws Exception {
+        robotMigration();
+        main(() -> {
+            app.mode = MainActivity.Mode.HOME; app.selectTrack(0); app.sequencer.stop(); app.sequencer.resetEffects(0);
+            app.sequencer.tracks[0].power(Sequencer.Effects.AUTOTUNE, true);
+            app.mode = MainActivity.Mode.EFFECTS; app.effectGroup = Sequencer.Effects.AUTOTUNE; app.selection = 0;
+            check(!app.effectRowEnabled(0), "Chromatic disables key");
+            app.confirm();
+            check(app.mode == MainActivity.Mode.EFFECTS, "Disabled key cannot be edited");
+            check(app.effectItems().length == 6, "Autotune has only its own five controls and power");
+            app.sequencer.tracks[0].power(Sequencer.Effects.ROBOT, true);
+            app.effectGroup = Sequencer.Effects.ROBOT;
+            check(app.effectItems()[0].contains("Robot"), "Robot opens with its own voice profile");
+            check(app.effectItems().length == 4 && app.effectItems()[0].startsWith("Voice /") && app.effectItems()[1].startsWith("Morph /") && app.effectItems()[2].startsWith("Mix /"), "Robot lists Voice, Morph, Mix and Confirm");
+            app.selection = 1; app.confirm(); app.wheel(100);
+            check(app.effectValue == 100, "Robot morph has an upper limit");
+            app.cancel();
+            check(app.sequencer.tracks[0].robotMorph == RobotEffect.DEFAULT_MORPH, "Cancel restores the previous robot morph");
+            app.confirm(); app.wheel(10); app.confirm();
+        });
+        ready();
+        main(() -> {
+            check(app.sequencer.tracks[0].robotMorph == RobotEffect.DEFAULT_MORPH + 10 && !app.sequencer.needsPreparation(), "Morph edits prepare the changed robot sample");
+            InstrumentView view = new InstrumentView(app);
+            view.auditText(true); view.layout(0, 0, 400, 880);
+            Bitmap bitmap = Bitmap.createBitmap(400, 880, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            for (int row = 0; row < app.effectItems().length; row++) {
+                app.selection = row; view.draw(canvas);
+                check(view.textIssues().isEmpty(), "Robot menu fits the sampler screen: " + view.textIssues());
+            }
+            bitmap.recycle();
+        });
+        restart();
+        main(() -> {
+            check(app.sequencer.tracks[0].robotMorph == RobotEffect.DEFAULT_MORPH + 10 && app.sequencer.tracks[0].robotMix == 100, "Robot controls survive reopening the project");
+            check(app.sequencer.tracks[0].autoStrength == 100, "Robot leaves Autotune independent");
+            app.mode = MainActivity.Mode.EFFECTS; app.effectGroup = Sequencer.Effects.ROBOT; app.selection = 0;
+        });
+        capture("robot-menu.png");
+    }
+
+    private void speechMenus() throws Exception {
+        String phrase = "Welcome to the tape deck sampler. Testing the different robot voices.";
+        int selectedTrack = app.track;
+        int steps = app.sequencer.tracks[selectedTrack].steps;
+        main(() -> {
+            app.mode = MainActivity.Mode.ADD_SAMPLE; app.selection = MainActivity.ADD_SPEECH; app.confirm();
+            check(app.mode == MainActivity.Mode.SPEECH, "Speech opens in the sampler menu");
+            app.wheelPlay();
+            check(!app.busy && !app.sequencer.isPlaying(), "Empty text cannot start the sequencer or speech");
+            app.selection = MainActivity.SPEECH_TEXT; app.confirm();
+            check(app.mode == MainActivity.Mode.TEXT, "Text editing types onto the sampler screen");
+        });
+        ready();
+        main(() -> {
+            enter(phrase);
+            check(app.mode == MainActivity.Mode.SPEECH && !app.busy, "Saving text returns to the sampler without generating");
+            app.selection = MainActivity.SPEECH_PREVIEW; app.confirm();
+        });
+        ready();
+        main(() -> {
+            check(app.sequencer.isPreviewing() && !app.sequencer.isPlaying(), "Preview menu item auditions speech without playing the pattern");
+            app.confirm();
+            check(!app.sequencer.isPreviewing() && app.sequencer.hasSelectionPreview(), "Preview menu item pauses speech");
+            app.wheelPlay();
+            check(app.sequencer.isPreviewing(), "Play resumes speech");
+            app.selectTrack(selectedTrack);
+            check(!app.sequencer.isPreviewing() && app.sequencer.hasSelectionPreview(), "The selected track pauses speech");
+            app.selectTrack(selectedTrack);
+            check(app.sequencer.isPreviewing(), "The selected track resumes speech");
+            app.selectTrack((selectedTrack + 1) % Sequencer.TRACKS);
+            app.pad(0);
+            check(app.track == selectedTrack && app.sequencer.tracks[selectedTrack].steps == steps, "Auditioning speech keeps the selected track and pattern");
+            app.selection = MainActivity.SPEECH_VOICE; app.confirm();
+            check(app.mode == MainActivity.Mode.SPEECH_VOICE, "Voices use the sampler menu");
+            app.wheel(100);
+            check(app.selection == RetroSpeech.INSTANCE.getVoices().length - 1 && !app.sequencer.hasSelectionPreview(), "Changing voices stops the previous preview");
+            app.wheelPlay();
+        });
+        ready();
+        main(() -> {
+            check(app.mode == MainActivity.Mode.SPEECH_VOICE && app.sequencer.isPreviewing(), "Play previews the highlighted voice in its menu");
+            app.selectTrack(selectedTrack);
+            check(!app.sequencer.isPreviewing(), "Selected track pauses a voice audition");
+            app.confirm();
+            check(app.mode == MainActivity.Mode.SPEECH && app.speechItems()[MainActivity.SPEECH_VOICE].contains("Whisper"), "Confirming a voice returns to the speech menu");
+            app.selection = MainActivity.SPEECH_TEXT; app.confirm();
+        });
+        ready();
+        main(() -> {
+            check(app.textValue.toString().equals(phrase), "Text remains editable after auditioning voices");
+            enter("This is the updated speech text.");
+            app.selectTrack(selectedTrack);
+        });
+        ready();
+        main(() -> {
+            check(app.sequencer.isPreviewing(), "Selected track generates and previews edited text");
+            app.wheelPlay();
+            app.selection = MainActivity.SPEECH_ADD; app.confirm();
+        });
+        ready();
+        main(() -> {
+            check(app.mode == MainActivity.Mode.IMPORT_START, "Add sample opens trimming for the auditioned speech");
+            app.cancel();
+            check(app.mode == MainActivity.Mode.SPEECH, "Returning from trimming opens the speech menu");
+            app.wheelPlay();
+            check(!app.busy && app.sequencer.isPreviewing(), "Returning from trimming reuses the generated preview");
+            app.cancel();
+            check(app.mode == MainActivity.Mode.ADD_SAMPLE && !app.sequencer.hasSelectionPreview(), "Leaving speech stops its preview");
+        });
+        capture("speech-menu.png");
     }
 
     private void cornerButtons() throws Exception {
@@ -267,44 +540,29 @@ public final class DeviceChecks extends Instrumentation {
             app.sequencer.selectPage(0); app.sequencer.tracks[0].steps = 0x9001;
             app.sequencer.editStep(0, 0).reverb = 23;
             tap(200, InstrumentView.WHEEL_Y + 104);
-            check(app.mode == MainActivity.Mode.PAGES && app.selection == 0, "Wheel bottom opens page actions");
-            check(Arrays.equals(MainActivity.PAGE_ACTIONS, new String[]{"Copy", "Swap", "Reset page"}), "Page menu lists its actions");
-            app.wheel(100); check(app.selection == 2, "Page menu stops at Reset page"); app.wheel(-100);
-            check(!app.pagePrompt, "Highlighting an action does not arm it");
-            app.confirm(); check(app.pagePrompt && app.pagePromptText().equals("SELECT A PAGE TO COPY"), "Select arms Copy");
-            app.cancel(); check(app.mode == MainActivity.Mode.PAGES && !app.pagePrompt, "Return leaves the prompt first");
-            app.wheel(1); app.confirm(); check(app.pagePromptText().equals("SELECT A PAGE"), "Swap prompts for a page");
-            app.pad(0); check(app.pagePrompt && app.pagePromptText().equals("SELECT SECOND PAGE"), "Swap prompts for the second page");
-            app.cancel(); check(app.swapSource == -1 && !app.pagePrompt, "Return cancels a started swap");
-            app.wheel(-100); app.confirm(); app.pad(0);
-            check(app.pageClipboard != null && app.pageClipboard.steps[0] == 0x9001, "Copy pad snapshots the whole page");
-            check(app.mode == MainActivity.Mode.PAGE_COPIED && app.pageClipboardSource == 0, "Copy opens the paste page screen");
+            check(app.mode == MainActivity.Mode.PAGES && app.pageCursor == 0, "Wheel bottom opens pages on the current page");
+            app.wheel(100); check(app.pageCursor == Sequencer.PAGE_COUNT - 1, "Page highlight stops at the last page"); app.wheel(-100);
+            app.wheelSide(1); check(app.pageNote == MainActivity.PAGE_NOTE_NONE, "Right side does nothing in pages");
+            app.wheelSide(-1);
+            check(app.pageClipboard != null && app.pageClipboard.steps[0] == 0x9001 && app.pageClipboardSource == 0, "Copy snapshots the highlighted page");
             int original = app.sequencer.page(3).steps[0];
-            app.wheel(5); check(app.mode == MainActivity.Mode.PAGE_COPIED, "Turning the wheel does nothing on paste page");
-            app.pad(3);
-            check(app.mode == MainActivity.Mode.PAGE_PASTE && app.pasteTarget == 3 && app.sequencer.page(3).steps[0] == original, "Pressing a pad asks to confirm");
-            app.pad(2); check(app.pasteTarget == 2 && app.sequencer.page(2).steps[0] != 0x9001, "Another pad changes the paste target");
-            app.pad(3); app.cancel();
-            check(app.mode == MainActivity.Mode.PAGE_COPIED && app.sequencer.page(3).steps[0] == original && app.pasteTarget == -1, "Cancel returns to paste page and leaves the destination intact");
-            app.pad(3); app.pad(3);
-            check(app.sequencer.page(3).steps[0] == 0x9001 && app.sequencer.page(3).padEffects[0][0].reverb == 23, "Pressing the same pad confirms and includes every pad override");
-            check(app.mode == MainActivity.Mode.PAGE_COPIED, "Paste page stays open for more pastes");
-            app.pad(4); app.confirm();
-            check(app.sequencer.page(4).steps[0] == 0x9001 && app.mode == MainActivity.Mode.PAGE_COPIED, "Center button confirms");
-            app.cancel(); check(app.mode == MainActivity.Mode.PAGES && app.selection == 0, "Return leaves paste page");
-            app.wheel(1); app.confirm(); int color = app.sequencer.page(3).color; app.pad(3); app.pad(7);
-            check(app.swapSource == -1 && app.sequencer.page(7).color == color, "Swap moves page colors after two pad presses");
-            app.wheel(1); app.confirm(); int cleared = app.sequencer.page(4).color; app.pad(4);
-            check(app.mode == MainActivity.Mode.PAGE_RESET && app.pasteTarget == 4 && app.sequencer.page(4).steps[0] == 0x9001, "Reset asks to confirm");
-            app.pad(5); check(app.pasteTarget == 5, "Another pad changes the reset target");
-            app.pad(4); app.cancel();
-            check(app.mode == MainActivity.Mode.PAGES && app.selection == 2 && app.sequencer.page(4).steps[0] == 0x9001, "Cancel leaves the page intact");
-            app.confirm(); app.pad(4); app.pad(4);
-            check(app.mode == MainActivity.Mode.PAGES && app.sequencer.page(4).steps[0] == 0 && app.sequencer.page(4).color == cleared, "Pressing the same pad resets the page");
-            app.confirm(); app.pad(4); app.confirm();
-            check(app.mode == MainActivity.Mode.PAGES && app.selection == 2, "Center button confirms a reset");
-            app.pad(7);
-            check(app.mode == MainActivity.Mode.HOME && app.sequencer.selectedPage() == 7 && app.sequencer.page(7).enabled, "A plain pad press opens and enables its page");
+            check(app.pageCursor == 1, "Copy moves the paste target to the next page");
+            app.wheel(2); check(app.mode == MainActivity.Mode.PAGES && app.pageCursor == 3 && app.sequencer.page(3).steps[0] == original, "Turning picks the paste target");
+            app.confirm();
+            check(app.sequencer.page(3).steps[0] == 0x9001 && app.sequencer.page(3).padEffects[0][0].reverb == 23 && app.pageNote == MainActivity.PAGE_NOTE_PASTED, "Paste includes every pad override");
+            app.wheel(1); app.confirm();
+            check(app.sequencer.page(4).steps[0] != 0x9001 && app.pageClipboard == null, "Pasting empties the clipboard");
+            app.wheel(-1); int color = app.sequencer.page(3).color; app.wheelSide(1);
+            check(app.moveSource == 3, "Move picks up the highlighted page");
+            app.cancel(); check(app.mode == MainActivity.Mode.PAGES && app.moveSource == -1, "Return cancels a started move");
+            app.wheelSide(1); app.wheel(4); app.wheelSide(1);
+            check(app.moveSource == -1 && app.sequencer.page(7).color == color && app.pageNote == MainActivity.PAGE_NOTE_MOVED, "Move swaps two pages");
+            app.sequencer.page(7).enabled = false; app.pad(7);
+            check(app.mode == MainActivity.Mode.PAGES && app.sequencer.page(7).enabled, "A pad press lights an off page first");
+        });
+        SystemClock.sleep(1200);
+        main(() -> {
+            check(app.mode == MainActivity.Mode.HOME && app.sequencer.selectedPage() == 7 && app.sequencer.page(7).enabled, "Then the page opens");
             app.wheelPages();
             touch(MotionEvent.ACTION_DOWN, 337, InstrumentView.PAD_TOP + InstrumentView.PAD_PITCH + 25);
         });
@@ -356,7 +614,7 @@ public final class DeviceChecks extends Instrumentation {
             app.track = 0; app.save(); effectsMenu();
             check(!Arrays.asList(app.effectItems()).contains("Mute") && !Arrays.asList(app.effectItems()).contains("Unmute"), "Track effects no longer contains mute");
             gain[0] = app.sequencer.tracks[0].gain;
-            effectParameter(5); app.wheel(-10); app.toggleTrackMute(0);
+            effectParameter(MainActivity.FX_VOLUME); app.wheel(-10); app.toggleTrackMute(0);
             try {
                 org.json.JSONArray stored = new org.json.JSONArray(app.getSharedPreferences(app.session.id, 0).getString("tracks", "[]"));
                 check(stored.getJSONObject(0).getBoolean("mute") && Math.abs(stored.getJSONObject(0).getDouble("gain") - gain[0]) < .001, "Saving mute does not commit an unfinished effect edit");
@@ -496,7 +754,7 @@ public final class DeviceChecks extends Instrumentation {
             app.sequencer.tracks[0].steps = 0xffff;
         });
         app.sequencer.prepareAll();
-        main(() -> { play(); app.openStepEffects(4); effectParameter(1); app.wheel(2); });
+        main(() -> { play(); app.openStepEffects(4); effectParameter(MainActivity.FX_PITCH); app.wheel(2); });
         liveReady();
         for (int i = 0; i < 40; i++) {
             int delta = i % 2 == 0 ? -2 : 2;
@@ -554,7 +812,8 @@ public final class DeviceChecks extends Instrumentation {
             app.cancel(); check(app.effectStackPage() && app.selection == 0, "Return selects the parent effect");
             app.confirm(); app.selection = app.effectItems().length - 1; app.confirm();
             check(app.effectStackPage() && app.selection == 0, "Confirm exits an effect and keeps it selected");
-            app.wheelPages(); check(app.mode == MainActivity.Mode.FX_REORDER, "Wheel bottom enters reorder mode");
+            app.wheelPages(); check(app.mode == MainActivity.Mode.FX_OPTIONS, "Wheel bottom opens effect options");
+            app.selection = MainActivity.OPTION_ORDER; app.confirm(); check(app.mode == MainActivity.Mode.FX_REORDER, "Options opens reorder mode");
             app.confirm(); check(app.effectHeld < 0, "Pinned effects cannot be picked up");
             check(MainActivity.FX_LOCK_REASONS[Sequencer.Effects.AUTOTUNE].equals(app.instrument.lockNotice()) && MainActivity.lockTitle(Sequencer.Effects.AUTOTUNE).equals("ALWAYS FIRST"), "Pinned effects explain why they cannot move");
             for (int group = 0; group < Sequencer.Effects.GROUPS; group++) check((MainActivity.FX_LOCK_REASONS[group] == null) == Sequencer.Effects.movable(group), "Every fixed effect has a reason");
@@ -572,44 +831,44 @@ public final class DeviceChecks extends Instrumentation {
             check(app.effectStack().length == 3, "Delete ignores the Add effect row");
             app.selection = 0; app.wheelSide(-1); app.selection = 0; app.wheelSide(-1);
             int globalSwing = app.sequencer.swing(); app.sequencer.swing(65); app.sequencer.tracks[0].swingOverride = 0;
-            effectParameter(21);
-            check(app.effectDisplay(21, app.effectValue).equals("65%"), "Track Swing displays the inherited global value");
+            effectParameter(MainActivity.FX_SWING);
+            check(app.effectDisplay(MainActivity.FX_SWING, app.effectValue).equals("65%"), "Track Swing displays the inherited global value");
             check(app.effectValue == 65, "Swing editor starts at the effective global value");
             app.wheel(1); check(app.sequencer.tracks[0].swingOverride == 66, "Swing adjusts directly from the global value");
             app.cancel();
             app.selection = 0; app.wheelSide(-1);
             check(app.sequencer.tracks[0].swingOverride == 0 && app.sequencer.tracks[0].nudge == 0, "Deleting Swing returns to the global value");
             app.sequencer.swing(globalSwing);
-            effectParameter(12); app.wheel(3);
+            effectParameter(MainActivity.FX_ATTACK); app.wheel(3);
             check(app.effectValue == 3, "Attack moves in 1 ms steps"); app.cancel();
-            effectParameter(13); app.wheel(3);
+            effectParameter(MainActivity.FX_DECAY); app.wheel(3);
             check(app.effectValue == 3, "Decay moves in 1 ms steps"); app.cancel();
-            effectParameter(15); app.wheel(3);
+            effectParameter(MainActivity.FX_RELEASE); app.wheel(3);
             check(app.effectValue == 65, "Release keeps 5 ms steps"); app.cancel();
             app.cancel(); app.selection = 0; app.wheelSide(-1);
-            effectParameter(24); check(app.effectValue == 2 && app.effectDisplay(24, 3).equals("3rd"), "Every Nth opens at 2nd"); app.wheel(100);
+            effectParameter(MainActivity.FX_EVERY); check(app.effectValue == 2 && app.effectDisplay(MainActivity.FX_EVERY, 3).equals("3rd"), "Every Nth opens at 2nd"); app.wheel(100);
             check(app.effectValue == 16, "Every Nth stops at 16th"); app.cancel();
             app.selection = 0; app.wheelSide(-1);
-            effectParameter(23); check(app.effectValue == 50, "Chance opens at 50%"); app.cancel();
+            effectParameter(MainActivity.FX_CHANCE); check(app.effectValue == 50, "Chance opens at 50%"); app.cancel();
             app.selection = 0; app.wheelSide(-1);
-            effectParameter(26);
-            check(app.effectValue == 50 && app.effectDisplay(26, 55).equals("5.5 Hz"), "Wobble rate starts at 5 Hz");
+            effectParameter(MainActivity.FX_WOBBLE_RATE);
+            check(app.effectValue == 50 && app.effectDisplay(MainActivity.FX_WOBBLE_RATE, 55).equals("5.5 Hz"), "Wobble rate starts at 5 Hz");
             app.wheel(2); check(app.effectValue == 60, "Wobble rate moves in half hertz steps"); app.cancel();
             app.cancel(); app.selection = 0; app.confirm();
             check(app.effectGroup == Sequencer.Effects.WOBBLE && app.effectItems().length == 4 && app.effectItems()[0].equals("Mode / Volume") && app.effectItems()[3].equals("Confirm"), "Wobble lists mode, rate and depth");
-            app.confirm(); app.wheel(5); check(app.effectValue == 2 && app.sequencer.tracks[0].wobbleMode == 2 && app.effectDisplay(25, 2).equals("Speed"), "Wobble mode stops at Speed"); app.cancel();
+            app.confirm(); app.wheel(5); check(app.effectValue == 2 && app.sequencer.tracks[0].wobbleMode == 2 && app.effectDisplay(MainActivity.FX_WOBBLE_MODE, 2).equals("Speed"), "Wobble mode stops at Speed"); app.cancel();
             app.cancel(); app.selection = 0; app.wheelSide(-1);
-            effectParameter(0); app.wheel(-25);
+            effectParameter(MainActivity.FX_SPEED); app.wheel(-25);
             check(app.sequencer.tracks[0].speed == 75 && app.mode == MainActivity.Mode.FX_VALUE && !app.busy, "Live speed keeps the editor responsive");
         }); liveReady();
         main(() -> {
             check(!app.sequencer.needsPreparation() && app.mode == MainActivity.Mode.FX_VALUE && app.sequencer.isPlaying(), "Speed processing completes before Select while the beat runs");
             app.cancel(); check(app.sequencer.tracks[0].speed == 100, "Live speed cancels");
             check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.SAMPLE, "Cancelling Speed returns to the effect list");
-            effectParameter(2); app.wheel(10); check(app.sequencer.tracks[0].reverb == 35, "Reverb updates live"); app.cancel();
+            effectParameter(MainActivity.FX_REVERB); app.wheel(10); check(app.sequencer.tracks[0].reverb == 35, "Reverb updates live"); app.cancel();
             check(app.sequencer.tracks[0].reverb == 25, "Reverb cancels back to its enabled setting");
             app.sequencer.tracks[0].reverb = 0; app.sequencer.tracks[0].power(Sequencer.Effects.REVERB, false);
-            effectParameter(5); app.wheel(-20); check(Math.round(app.sequencer.tracks[0].gain * 100) == 60, "Volume is inside Track effects"); app.cancel();
+            effectParameter(MainActivity.FX_VOLUME); app.wheel(-20); check(Math.round(app.sequencer.tracks[0].gain * 100) == 60, "Volume is inside Track effects"); app.cancel();
             app.cancel(); app.cancel();
             touch(MotionEvent.ACTION_DOWN, 64, InstrumentView.PAD_TOP + InstrumentView.PAD_PITCH + 25);
         });
@@ -618,10 +877,10 @@ public final class DeviceChecks extends Instrumentation {
             touch(MotionEvent.ACTION_UP, 64, InstrumentView.PAD_TOP + InstrumentView.PAD_PITCH + 25);
             check(app.mode == MainActivity.Mode.EFFECTS && app.stepTarget == 4 && app.sequencer.tracks[0].steps == 1, "Holding pad 05 opens its effects without toggling the beat");
             check(!Arrays.asList(app.addItems()).contains("Swing") && !Arrays.asList(app.addItems()).contains("Nudge"), "Pad effects omit track timing");
-            effectParameter(2); app.wheel(45); app.confirm();
+            effectParameter(MainActivity.FX_REVERB); app.wheel(45); app.confirm();
             check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.REVERB, "Saving a single-value effect returns to the effect list");
             check(app.sequencer.tracks[0].padEffects[4].reverb == 45 && app.sequencer.tracks[0].padEffects[3] == null && app.sequencer.tracks[0].reverb == 0, "Pad effects are isolated from the track and neighboring pads");
-            effectParameter(0); app.wheel(-40);
+            effectParameter(MainActivity.FX_SPEED); app.wheel(-40);
         }); liveReady();
         main(() -> { app.confirm(); app.save(); }); ready(); restart();
         main(() -> {
@@ -633,7 +892,7 @@ public final class DeviceChecks extends Instrumentation {
             check(app.mode == MainActivity.Mode.EXPORT_LOOPS && app.selection == 1 && app.exportLoopItems()[0].equals("One loop") && app.exportLoopItems()[1].equals("All pads / 3 loops"), "WAV export offers a loop choice when pads play later");
             app.cancel(); check(app.mode == MainActivity.Mode.EXPORT && app.selection == 1, "Return leaves the loop choice");
             app.sequencer.tracks[0].every = 1; app.mode = MainActivity.Mode.HOME;
-            effectsMenu(); effectParameter(5); app.wheel(-10);
+            effectsMenu(); effectParameter(MainActivity.FX_VOLUME); app.wheel(-10);
         });
         backgroundAndResume();
         main(() -> {
@@ -713,20 +972,15 @@ public final class DeviceChecks extends Instrumentation {
         int count = app.sessions.size();
         main(() -> {
             root("Project"); app.selection = 0; app.confirm();
-            check(app.newSessionDialog != null && app.newSessionDialog.isShowing(), "New session opens a naming dialog");
+            check(app.mode == MainActivity.Mode.TEXT, "New session types onto the sampler screen");
+            check(app.textValue.toString().equals(SessionStore.nextDefaultName(app.sessions)), "New project prefills the next default name");
+            app.textBackspace(); app.typeChar(' '); app.finishText();
+            check(app.mode == MainActivity.Mode.TEXT && app.sessions.size() == count, "Blank names do not create sessions");
+            app.textBackspace();
+            for (char letter : label.toCharArray()) app.typeChar(letter);
         });
-        waitForIdleSync();
-        main(() -> {
-            EditText name = input(app.newSessionDialog.getWindow().getDecorView()); check(name != null && name.hasFocus(), "Session name has keyboard focus");
-            check(name.getText().toString().equals(SessionStore.nextDefaultName(app.sessions)) && app.newSessionDialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled(), "New project prefills the next default name and enables Create");
-            name.setText("   "); app.newSessionDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
-            check(app.newSessionDialog.isShowing() && app.sessions.size() == count, "Blank names do not create sessions");
-        });
-        SystemClock.sleep(500);
-        main(() -> check(((InputMethodManager) app.getSystemService(Context.INPUT_METHOD_SERVICE)).isAcceptingText(), "Android keyboard accepts the session name"));
-        main(() -> input(app.newSessionDialog.getWindow().getDecorView()).setText(label));
         capture("session-name-preview.png");
-        main(() -> app.newSessionDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick());
+        main(() -> app.finishText());
         main(() -> { check(app.mode == MainActivity.Mode.PROJECT_COLOR && app.colorForNew, "Naming a tape asks for its color"); app.confirm(); }); ready();
         SessionStore.Entry created = app.session;
         main(() -> {
@@ -779,7 +1033,7 @@ public final class DeviceChecks extends Instrumentation {
                         String[] items = auditItems(mode); int count = items == null ? mode == MainActivity.Mode.FX_VALUE ? MainActivity.FX_LABELS.length : 1 : items.length;
                         for (int i = 0; i < count; i++) {
                             app.selection = i;
-                            if (mode == MainActivity.Mode.FX_VALUE) { app.effectParameter = i; app.effectValue = i == 3 || i == 17 ? 4 : i == 1 ? -12 : i == 16 ? 11 : i == 21 ? 75 : i == 25 ? 2 : 100; }
+                            if (mode == MainActivity.Mode.FX_VALUE) { app.effectParameter = i; app.effectValue = auditEffectValue(i); }
                             view.draw(canvas); ArrayList<String> issues = view.textIssues();
                             check(issues.isEmpty(), "Text " + mode + " row " + i + " " + Arrays.toString(size) + ": " + issues); textLayouts++;
                         }
@@ -795,11 +1049,39 @@ public final class DeviceChecks extends Instrumentation {
         });
     }
 
+    private int auditEffectValue(int parameter) {
+        switch (parameter) {
+            case MainActivity.FX_AUTO_KEY: return PitchCorrector.KEYS.length - 1;
+            case MainActivity.FX_AUTO_SCALE: return PitchCorrector.SCALES.length - 1;
+            case MainActivity.FX_ROBOT_PROFILE: return RobotEffect.PROFILES.length - 1;
+            case MainActivity.FX_WOBBLE_MODE: return MainActivity.WOBBLE_MODES.length - 1;
+            case MainActivity.FX_DELAY_TIME: return TrackEffects.DELAY_BEATS.length - 1;
+            case MainActivity.FX_DELAY_FEEDBACK: return TrackEffects.MAX_ECHOES;
+            case MainActivity.FX_DISTORTION: return TrackEffects.DISTORTIONS.length;
+            case MainActivity.FX_CRUSH_BITS: return TrackEffects.MAX_CRUSH_BITS;
+            case MainActivity.FX_CRUSH_RATE: return TrackEffects.MAX_CRUSH_RATE;
+            case MainActivity.FX_PITCH: return -12;
+            case MainActivity.FX_NUDGE: return 75;
+            case MainActivity.FX_WOBBLE_RATE: return 2;
+            default: return 100;
+        }
+    }
+
+    private void enter(String value) {
+        app.textBackspace();
+        while (app.textValue.length() > 0) app.textBackspace();
+        for (char letter : value.toCharArray()) app.typeChar(letter);
+        app.finishText();
+    }
+
     private String[] auditItems(MainActivity.Mode mode) {
         switch (mode) {
-            case PAGES: return MainActivity.PAGE_ACTIONS;
+            case SYNTH: return app.synthItems();
+            case FX_OPTIONS: return app.optionItems();
             case MENU: return MainActivity.MENU;
             case ADD_SAMPLE: return MainActivity.ADD_SAMPLE;
+            case SPEECH: return app.speechItems();
+            case SPEECH_VOICE: return RetroSpeech.INSTANCE.getVoices();
             case SYSTEM: return app.systemItems();
             case EXPORT: return MainActivity.EXPORT_ITEMS;
             case EXPORT_LOOPS: return app.exportLoopItems();
@@ -869,8 +1151,8 @@ public final class DeviceChecks extends Instrumentation {
         ActivityMonitor monitor = addMonitor(MainActivity.class.getName(), null, false); main(() -> app.recreate());
         Activity replacement = waitForMonitorWithTimeout(monitor, 6000); removeMonitor(monitor); check(replacement instanceof MainActivity, "Activity recreates"); app = (MainActivity) replacement; ready();
     }
-    private void ready() { await(() -> !app.busy, 15000); waitForIdleSync(); }
-    private void liveReady() { await(() -> !app.sequencer.needsPreparation(), 15000); waitForIdleSync(); }
+    private void ready() { await(() -> !app.busy, 15000); }
+    private void liveReady() { await(() -> !app.sequencer.needsPreparation(), 15000); }
     private interface Condition { boolean ready(); }
     private void await(Condition condition, int timeout) {
         long deadline = SystemClock.uptimeMillis() + timeout;

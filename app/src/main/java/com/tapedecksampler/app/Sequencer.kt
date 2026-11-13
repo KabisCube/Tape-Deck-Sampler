@@ -20,8 +20,14 @@ class Sequencer(private val tape: Tape) {
         @JvmField var distortion = 0
         @JvmField var drive = DEFAULT_DRIVE
         @JvmField var distortionMix = 100
+        @JvmField var crushBits = TrackEffects.DEFAULT_CRUSH_BITS
+        @JvmField var crushRate = TrackEffects.DEFAULT_CRUSH_RATE
         @JvmField var highPass = 0
         @JvmField var lowPass = 0
+        @JvmField var bandPass = 0
+        @JvmField var highResonance = 0
+        @JvmField var lowResonance = 0
+        @JvmField var bandResonance = 0
         @JvmField var delayBeat = DEFAULT_DELAY_BEAT
         @JvmField var delayEchoes = DEFAULT_DELAY_ECHOES
         @JvmField var delayMix = 0
@@ -36,6 +42,9 @@ class Sequencer(private val tape: Tape) {
         @JvmField var autoStrength = 0
         @JvmField var autoRetune = DEFAULT_RETUNE_MS
         @JvmField var autoMix = 100
+        @JvmField var robotProfile = RobotEffect.DEFAULT_PROFILE
+        @JvmField var robotMorph = RobotEffect.DEFAULT_MORPH
+        @JvmField var robotMix = 0
         @JvmField var chance = 100
         @JvmField var every = 1
         @JvmField var wobbleMode = 0
@@ -54,10 +63,12 @@ class Sequencer(private val tape: Tape) {
             return when (group) {
                 SAMPLE -> speed == other.speed
                 AUTOTUNE -> autoKey == other.autoKey && autoScale == other.autoScale && autoStrength == other.autoStrength && autoRetune == other.autoRetune && autoMix == other.autoMix
-                HIGH_PASS -> highPass == other.highPass
-                LOW_PASS -> lowPass == other.lowPass
+                ROBOT -> robotProfile == other.robotProfile && robotMorph == other.robotMorph && robotMix == other.robotMix
+                HIGH_PASS -> highPass == other.highPass && highResonance == other.highResonance
+                LOW_PASS -> lowPass == other.lowPass && lowResonance == other.lowResonance
+                BAND_PASS -> bandPass == other.bandPass && bandResonance == other.bandResonance
                 DELAY -> delayBeat == other.delayBeat && delayEchoes == other.delayEchoes && delayMix == other.delayMix
-                DISTORTION -> distortion == other.distortion && drive == other.drive && distortionMix == other.distortionMix
+                DISTORTION -> distortion == other.distortion && drive == other.drive && distortionMix == other.distortionMix && crushBits == other.crushBits && crushRate == other.crushRate
                 ENVELOPE -> attack == other.attack && decay == other.decay && sustain == other.sustain && release == other.release
                 REVERB -> reverb == other.reverb
                 SWING -> swingOverride == other.swingOverride
@@ -122,16 +133,18 @@ class Sequencer(private val tape: Tape) {
 
         fun restoreOrder(saved: IntArray?) {
             if (saved == null) return
-            var order = saved
-            if (saved.size == CHAIN_LENGTH - 1) {
-                order = IntArray(CHAIN_LENGTH)
-                var written = 0
-                for (group in saved) {
-                    if (written >= CHAIN_LENGTH) return
-                    order[written++] = group
-                    if (group == HIGH_PASS && written < CHAIN_LENGTH) order[written++] = LOW_PASS
-                }
+            val expanded = saved.toMutableList()
+            if (expanded.size == LEGACY_CHAIN_LENGTH) {
+                val high = expanded.indexOf(HIGH_PASS)
+                if (high < 0) return
+                expanded.add(high + 1, LOW_PASS)
             }
+            if (expanded.size == SPLIT_CHAIN_LENGTH) {
+                val low = expanded.indexOf(LOW_PASS)
+                if (low < 0) return
+                expanded.add(low + 1, BAND_PASS)
+            }
+            val order = expanded.toIntArray()
             if (order.size != CHAIN_LENGTH) return
             var seen = 0
             for (group in order) {
@@ -163,9 +176,11 @@ class Sequencer(private val tape: Tape) {
             val bit = 1 shl group
             if ((effectPowerSet and bit) != 0) return (effectPower and bit) != 0
             return when (group) {
+                ROBOT -> robotMix > 0
                 AUTOTUNE -> autoStrength > 0 && autoMix > 0
                 HIGH_PASS -> highPass > 0
                 LOW_PASS -> lowPass > 0
+                BAND_PASS -> bandPass > 0
                 DELAY -> delayMix > 0
                 DISTORTION -> distortion != 0 && distortionMix > 0
                 ENVELOPE -> attack > 0 || decay > 0 || sustain != 100 || release > 0
@@ -188,9 +203,11 @@ class Sequencer(private val tape: Tape) {
             val bit = 1 shl group
             if (enabled && (effectPowerSet and bit) == 0) {
                 when (group) {
+                    ROBOT -> if (robotMix == 0) robotMix = 100
                     AUTOTUNE -> if (autoStrength == 0) autoStrength = ON_AUTOTUNE_STRENGTH
                     HIGH_PASS -> if (highPass == 0) highPass = ON_HIGH_PASS_HZ
                     LOW_PASS -> if (lowPass == 0) lowPass = ON_LOW_PASS_HZ
+                    BAND_PASS -> if (bandPass == 0) bandPass = ON_BAND_PASS_HZ
                     DISTORTION -> if (distortion == 0) distortion = ON_DISTORTION_TYPE
                     DELAY -> { if (delayMix == 0) delayMix = ON_DELAY_MIX; delayBeat = DEFAULT_DELAY_BEAT }
                     ENVELOPE -> if (attack == 0 && decay == 0 && sustain == 100 && release == 0) release = ON_RELEASE_MS
@@ -206,16 +223,20 @@ class Sequencer(private val tape: Tape) {
 
         fun wobbles(): Boolean = powered(WOBBLE) && wobbleDepth > 0
 
+        fun hasRobot(): Boolean = powered(ROBOT) && robotMix > 0
+
         fun hasAutotune(): Boolean = powered(AUTOTUNE) && autoStrength > 0 && autoMix > 0
 
         fun resetGroup(group: Int) {
             when (group) {
                 SAMPLE -> { speed = 100; prepared = null }
                 AUTOTUNE -> { autoKey = 0; autoScale = 0; autoStrength = 0; autoRetune = DEFAULT_RETUNE_MS; autoMix = 100; prepared = null }
-                HIGH_PASS -> highPass = 0
-                LOW_PASS -> lowPass = 0
+                ROBOT -> { robotProfile = RobotEffect.DEFAULT_PROFILE; robotMorph = RobotEffect.DEFAULT_MORPH; robotMix = 0; prepared = null }
+                HIGH_PASS -> { highPass = 0; highResonance = 0 }
+                LOW_PASS -> { lowPass = 0; lowResonance = 0 }
+                BAND_PASS -> { bandPass = 0; bandResonance = 0 }
                 DELAY -> { delayBeat = DEFAULT_DELAY_BEAT; delayEchoes = DEFAULT_DELAY_ECHOES; delayMix = 0 }
-                DISTORTION -> { distortion = 0; drive = DEFAULT_DRIVE; distortionMix = 100 }
+                DISTORTION -> { distortion = 0; drive = DEFAULT_DRIVE; distortionMix = 100; crushBits = TrackEffects.DEFAULT_CRUSH_BITS; crushRate = TrackEffects.DEFAULT_CRUSH_RATE }
                 ENVELOPE -> { attack = 0; decay = 0; release = 0; sustain = 100 }
                 REVERB -> reverb = 0
                 SWING -> swingOverride = 0
@@ -241,10 +262,14 @@ class Sequencer(private val tape: Tape) {
                     autoKey = source.autoKey; autoScale = source.autoScale; autoStrength = source.autoStrength
                     autoRetune = source.autoRetune; autoMix = source.autoMix; prepared = null
                 }
-                HIGH_PASS -> highPass = source.highPass
-                LOW_PASS -> lowPass = source.lowPass
+                ROBOT -> {
+                    robotProfile = source.robotProfile; robotMorph = source.robotMorph; robotMix = source.robotMix; prepared = null
+                }
+                HIGH_PASS -> { highPass = source.highPass; highResonance = source.highResonance }
+                LOW_PASS -> { lowPass = source.lowPass; lowResonance = source.lowResonance }
+                BAND_PASS -> { bandPass = source.bandPass; bandResonance = source.bandResonance }
                 DELAY -> { delayBeat = source.delayBeat; delayEchoes = source.delayEchoes; delayMix = source.delayMix }
-                DISTORTION -> { distortion = source.distortion; drive = source.drive; distortionMix = source.distortionMix }
+                DISTORTION -> { distortion = source.distortion; drive = source.drive; distortionMix = source.distortionMix; crushBits = source.crushBits; crushRate = source.crushRate }
                 ENVELOPE -> { attack = source.attack; decay = source.decay; sustain = source.sustain; release = source.release }
                 REVERB -> reverb = source.reverb
                 SWING -> swingOverride = source.swingOverride
@@ -267,12 +292,15 @@ class Sequencer(private val tape: Tape) {
         fun copyFrom(source: Effects) {
             gain = source.gain; mute = source.mute; speed = source.speed; pitch = source.pitch
             reverb = source.reverb; distortion = source.distortion; drive = source.drive; distortionMix = source.distortionMix; prepared = source.prepared
-            highPass = source.highPass; lowPass = source.lowPass; delayBeat = source.delayBeat
+            highPass = source.highPass; lowPass = source.lowPass; bandPass = source.bandPass
+            highResonance = source.highResonance; lowResonance = source.lowResonance; bandResonance = source.bandResonance
+            crushBits = source.crushBits; crushRate = source.crushRate; delayBeat = source.delayBeat
             delayEchoes = source.delayEchoes; delayMix = source.delayMix
             attack = source.attack; decay = source.decay; sustain = source.sustain; release = source.release
             swingOverride = source.swingOverride; nudge = source.nudge
             autoKey = source.autoKey; autoScale = source.autoScale; autoStrength = source.autoStrength
             autoRetune = source.autoRetune; autoMix = source.autoMix
+            robotProfile = source.robotProfile; robotMorph = source.robotMorph; robotMix = source.robotMix
             effectPower = source.effectPower; effectPowerSet = source.effectPowerSet
             chain = source.chain; neutralGain = source.neutralGain
             chance = source.chance; every = source.every
@@ -301,8 +329,12 @@ class Sequencer(private val tape: Tape) {
             const val WOBBLE_VOLUME = 0
             const val WOBBLE_PITCH = 1
             const val WOBBLE_SPEED = 2
-            const val GROUPS = 16
-            const val CHAIN_LENGTH = 5
+            const val ROBOT = 16
+            const val BAND_PASS = 17
+            const val GROUPS = 18
+            private const val LEGACY_CHAIN_LENGTH = 4
+            const val SPLIT_CHAIN_LENGTH = 5
+            const val CHAIN_LENGTH = 6
             const val CHAIN_BIT = 1 shl 30
             const val DEFAULT_GAIN = 0.8f
             const val DEFAULT_DRIVE = 40
@@ -313,6 +345,7 @@ class Sequencer(private val tape: Tape) {
             private const val ON_AUTOTUNE_STRENGTH = 100
             private const val ON_HIGH_PASS_HZ = 200
             private const val ON_LOW_PASS_HZ = 12000
+            private const val ON_BAND_PASS_HZ = 1000
             private const val ON_DELAY_MIX = 25
             private const val ON_DISTORTION_TYPE = 1
             private const val ON_RELEASE_MS = 50
@@ -320,15 +353,15 @@ class Sequencer(private val tape: Tape) {
             private const val ON_CHANCE = 50
             private const val ON_EVERY = 2
             private const val ON_WOBBLE_DEPTH = 50
-            private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, DISTORTION, REVERB, DELAY)
-            private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, AUTOTUNE, SWING, NUDGE, WOBBLE, ENVELOPE)
+            private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, BAND_PASS, DISTORTION, REVERB, DELAY)
+            private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, ROBOT, AUTOTUNE, SWING, NUDGE, WOBBLE, ENVELOPE)
             private val OUTPUT_STAGE = intArrayOf(VOLUME)
 
             @JvmStatic fun hasPowerSwitch(group: Int): Boolean = group in SAMPLE until GROUPS
 
             @JvmStatic fun inherits(group: Int): Boolean = group != VOLUME && group != SWING && group != NUDGE
 
-            @JvmStatic fun movable(group: Int): Boolean = group == HIGH_PASS || group == LOW_PASS || group == DELAY || group == DISTORTION || group == REVERB
+            @JvmStatic fun movable(group: Int): Boolean = group == HIGH_PASS || group == LOW_PASS || group == BAND_PASS || group == DELAY || group == DISTORTION || group == REVERB
         }
     }
 
@@ -374,6 +407,10 @@ class Sequencer(private val tape: Tape) {
         private val autoStrength = controls.autoStrength
         private val autoRetune = controls.autoRetune
         private val autoMix = controls.autoMix
+        private val robotProfile = controls.robotProfile
+        private val robotMorph = controls.robotMorph
+        private val robotMix = controls.robotMix
+        private val robotPowered = controls.powered(Effects.ROBOT)
         private val autoPowered = controls.powered(Effects.AUTOTUNE)
 
         internal fun matches(track: Track, controls: Effects, version: Long): Boolean =
@@ -382,6 +419,7 @@ class Sequencer(private val tape: Tape) {
 
         internal fun tuningMatches(controls: Effects): Boolean =
             autoKey == controls.autoKey && autoScale == controls.autoScale && autoStrength == controls.autoStrength && autoRetune == controls.autoRetune && autoMix == controls.autoMix && autoPowered == controls.powered(Effects.AUTOTUNE)
+                && robotProfile == controls.robotProfile && robotMorph == controls.robotMorph && robotMix == controls.robotMix && robotPowered == controls.powered(Effects.ROBOT)
     }
 
     private class Voice(@JvmField val track: Int, @JvmField val step: Int, @JvmField var samples: ShortArray, @JvmField var start: Int, @JvmField var end: Int) {
@@ -721,7 +759,7 @@ class Sequencer(private val tape: Tape) {
         val revision: Long
         synchronized(tape) { source = tape.slice(start, end); revision = tape.revision() }
         val transformed = SampleProcessor.process(source, speed, pitch)
-        return PreparedSample(PitchCorrector.process(transformed, snapshot), start, end, speed, pitch, revision, snapshot)
+        return PreparedSample(PitchCorrector.process(RobotEffect.process(transformed, snapshot), snapshot), start, end, speed, pitch, revision, snapshot)
     }
 
     @Synchronized fun apply(index: Int, prepared: PreparedSample) = apply(index, -1, prepared)
@@ -813,7 +851,7 @@ class Sequencer(private val tape: Tape) {
         val voice = Voice(index, step, tape.samples, track.start, track.end)
         voice.bus = bus
         assign(voice, controls, 0.0)
-        if (voices.size == MAX_VOICES) voices.removeAt(0)
+        voices.removeAll { it.track == index }
         voices.add(voice)
     }
 
@@ -823,7 +861,7 @@ class Sequencer(private val tape: Tape) {
         val previousStart = voice.start
         val previousEnd = voice.end
         val prepared = controls.prepared
-        if (hasTransform(controls) && prepared != null && prepared.matches(track, controls, tape.revision())) {
+        if (hasTransform(controls) && prepared != null && prepared.revision == tape.revision() && prepared.start == sliceStart(track, controls) && prepared.end == sliceEnd(track, controls)) {
             voice.samples = prepared.samples; voice.start = 0; voice.end = prepared.samples.size
         } else {
             voice.samples = tape.samples; voice.start = sliceStart(track, controls); voice.end = sliceEnd(track, controls)
@@ -1001,7 +1039,6 @@ class Sequencer(private val tape: Tape) {
         const val DEFAULT_BPM = 120
         const val DEFAULT_SLICE_FRAMES = Tape.RATE / 4
         const val DEFAULT_SWING = 50
-        private const val MAX_VOICES = 64
         private const val DECLICK_FRAMES = 48f
         private const val MIN_SLICE_FRAMES = 48
         private const val FRAMES_PER_MS = Tape.RATE / 1000
@@ -1042,7 +1079,7 @@ class Sequencer(private val tape: Tape) {
             return maxOf(sliceStart(track, controls) + MIN_SLICE_FRAMES, minOf(Tape.LENGTH, end))
         }
 
-        private fun hasTransform(controls: Effects): Boolean = controls.speed != 100 || controls.pitch != 0 || controls.hasAutotune()
+        private fun hasTransform(controls: Effects): Boolean = controls.speed != 100 || controls.pitch != 0 || controls.hasAutotune() || controls.hasRobot()
 
         private fun wobbled(v: Voice, controls: Effects): Float {
             val hertz = controls.wobbleRate / WOBBLE_RATE_STEPS_PER_HZ

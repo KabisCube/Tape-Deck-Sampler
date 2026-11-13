@@ -10,6 +10,14 @@ if (keystoreFile.exists()) keystoreFile.withInputStream { keystoreProps.load(it)
 android {
     namespace 'com.tapedecksampler.app'
     compileSdk 35
+    ndkVersion '28.2.13676358'
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
 
     defaultConfig {
         applicationId 'com.tapedecksampler.app'

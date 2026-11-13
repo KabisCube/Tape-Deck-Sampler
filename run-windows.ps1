@@ -81,6 +81,11 @@ $microphone = Invoke-Device -Command @('emu', 'avd', 'hostmicon')
 if ($microphone.Code -ne 0 -or $microphone.Text -match 'KO:') { Write-Warning 'Host microphone is unavailable. Check the emulator microphone controls and Windows microphone settings.' }
 Write-Host 'Installing the latest Tape Deck Sampler build...'
 $install = Invoke-Device -Command @('install', '-r', $apk)
+if ($install.Code -ne 0 -and $install.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
+    Write-Warning 'The preview has a build signed with a different key. Replacing it; preview data is reset.'
+    $null = Invoke-Device -Command @('uninstall', 'com.tapedecksampler.app')
+    $install = Invoke-Device -Command @('install', '-r', $apk)
+}
 if ($install.Code -ne 0) { throw "Installation failed: $($install.Text)" }
 $null = Invoke-Device -Command @('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
 $null = Invoke-Device -Command @('shell', 'wm', 'dismiss-keyguard')
