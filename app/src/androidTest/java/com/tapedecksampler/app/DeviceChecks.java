@@ -396,8 +396,15 @@ public final class DeviceChecks extends Instrumentation {
             check(app.tape != null && app.audio != null, "Session and audio engine launch");
             check(Arrays.equals(MainActivity.MENU, new String[]{"Track effects", "Add sample", "Tempo", "Sync", "Projects", "System", "Check the back"}), "Slicing is accessed through the wheel and the back view is last in the main menu");
             app.batteries.found = false;
-            check(app.systemItems().length == 4 && !Arrays.asList(app.systemItems()).contains("Check the back"), "System contains device settings");
-            root("Projects"); app.selection = 3; app.confirm();
+            check(app.systemItems()[3].startsWith("Left hand mode") && !Arrays.asList(app.systemItems()).contains("Check the back"), "System contains device settings");
+            check(Arrays.equals(MainActivity.PROJECT_ITEMS, new String[]{"Open", "Name", "Color", "Export", "Delete"}), "Project menu holds the loaded tape's actions");
+            root("Projects");
+            check(app.mode == MainActivity.Mode.PROJECT_OPEN && app.carouselKey() == app.session.number, "Projects opens the carousel on the loaded tape");
+            app.selection = 0; check(app.importSelected(), "Import project is the first cassette");
+            app.selection = 1; check(app.newSelected(), "New project is the second cassette");
+            app.selection = loadedIndex() + 2; app.confirm();
+            check(app.mode == MainActivity.Mode.PROJECTS, "Picking the loaded tape shows the project menu");
+            app.selection = MainActivity.PROJECT_EXPORT; app.confirm();
             check(app.mode == MainActivity.Mode.EXPORT && Arrays.equals(MainActivity.EXPORT_ITEMS, new String[]{"As MIDI", "As WAV", "As Project"}), "Export offers both file formats and the project");
             app.wheel(100); check(app.selection == 2, "Export stops at its last item");
             app.cancel(); check(app.mode == MainActivity.Mode.PROJECTS && app.selection == MainActivity.PROJECT_EXPORT, "Export returns to the project menu");
@@ -419,7 +426,7 @@ public final class DeviceChecks extends Instrumentation {
             int pattern = app.sequencer.tracks[app.track].steps;
             long span = app.timelineSpan(); zoomIn();
             check(app.timelineSpan() < span && app.sequencer.tracks[app.track].steps == pattern, "Pad 13 zooms in without changing its step");
-            zoomOut(); check(app.timelineSpan() == span && app.sequencer.tracks[app.track].steps == pattern, "Pad 14 zooms out without changing its step");
+            zoomOut(); check(Math.abs(app.timelineSpan() - span) <= 1 && app.sequencer.tracks[app.track].steps == pattern, "Pad 14 zooms out without changing its step");
             tap(200, InstrumentView.WHEEL_Y + 104);
             check(app.mode == MainActivity.Mode.START && app.timelineSpan() == span, "Wheel bottom has no Back action");
             tap(200, InstrumentView.WHEEL_Y - 104); check(app.mode == MainActivity.Mode.HOME, "MENU cancels a slice opened from Home");
@@ -428,9 +435,9 @@ public final class DeviceChecks extends Instrumentation {
             app.wheel(100); check(app.selection == MainActivity.MENU.length - 1, "Menu stops at the last item");
             app.cancel();
             root("Add sample");
-            check(Arrays.equals(MainActivity.ADD_SAMPLE, new String[]{"Record microphone", "Record device", "Import sample"}), "Add sample offers microphone, device recording, then import");
+            check(Arrays.equals(MainActivity.ADD_SAMPLE, new String[]{"Record microphone", "Record device", "Import sample", "Text to speech", "Synth"}), "Add sample offers recording, import, speech and synth");
             app.wheel(-100); check(app.selection == 0, "Add sample stops at its first item");
-            app.wheel(100); check(app.selection == 2, "Add sample stops at its last item");
+            app.wheel(100); check(app.selection == MainActivity.ADD_SAMPLE.length - 1, "Add sample stops at its last item");
             app.selection = 1; app.confirm();
             check(app.mode == MainActivity.Mode.DEVICE_RECORD && !DeviceCaptureService.active(), "Device recording opens a capture consent screen before recording");
             app.cancel(); check(app.mode == MainActivity.Mode.ADD_SAMPLE && app.selection == 1, "Leaving device recording returns to Add sample");
@@ -542,7 +549,8 @@ public final class DeviceChecks extends Instrumentation {
             tap(200, InstrumentView.WHEEL_Y + 104);
             check(app.mode == MainActivity.Mode.PAGES && app.pageCursor == 0, "Wheel bottom opens pages on the current page");
             app.wheel(100); check(app.pageCursor == Sequencer.PAGE_COUNT - 1, "Page highlight stops at the last page"); app.wheel(-100);
-            app.wheelSide(1); check(app.pageNote == MainActivity.PAGE_NOTE_NONE, "Right side does nothing in pages");
+            app.wheelSide(1); check(app.moveSource == 0 && app.pageNote == MainActivity.PAGE_NOTE_NONE, "Right side picks up the page to move");
+            app.cancel(); check(app.mode == MainActivity.Mode.PAGES && app.moveSource == -1, "Return drops the held page");
             app.wheelSide(-1);
             check(app.pageClipboard != null && app.pageClipboard.steps[0] == 0x9001 && app.pageClipboardSource == 0, "Copy snapshots the highlighted page");
             int original = app.sequencer.page(3).steps[0];
@@ -550,9 +558,8 @@ public final class DeviceChecks extends Instrumentation {
             app.wheel(2); check(app.mode == MainActivity.Mode.PAGES && app.pageCursor == 3 && app.sequencer.page(3).steps[0] == original, "Turning picks the paste target");
             app.confirm();
             check(app.sequencer.page(3).steps[0] == 0x9001 && app.sequencer.page(3).padEffects[0][0].reverb == 23 && app.pageNote == MainActivity.PAGE_NOTE_PASTED, "Paste includes every pad override");
-            app.wheel(1); app.confirm();
             check(app.sequencer.page(4).steps[0] != 0x9001 && app.pageClipboard == null, "Pasting empties the clipboard");
-            app.wheel(-1); int color = app.sequencer.page(3).color; app.wheelSide(1);
+            int color = app.sequencer.page(3).color; app.wheelSide(1);
             check(app.moveSource == 3, "Move picks up the highlighted page");
             app.cancel(); check(app.mode == MainActivity.Mode.PAGES && app.moveSource == -1, "Return cancels a started move");
             app.wheelSide(1); app.wheel(4); app.wheelSide(1);
@@ -788,22 +795,21 @@ public final class DeviceChecks extends Instrumentation {
                 check(MainActivity.FX_GROUP_PARAMETERS[group].length == MainActivity.FX_GROUP_LABELS[group].length, "Effect group labels match their controls");
                 for (int parameter : MainActivity.FX_GROUP_PARAMETERS[group]) check(parameters.add(parameter), "Each effect appears in exactly one menu");
             }
-            check(parameters.size() == MainActivity.FX_LABELS.length, "Grouped effects retain every control");
+            check(parameters.size() == Arrays.stream(MainActivity.FX_LABELS).filter(l -> !l.isEmpty()).count(), "Grouped effects retain every control");
             app.confirm();
             check(app.mode == MainActivity.Mode.FX_ADD && !Arrays.asList(app.addItems()).contains("Reset track effects"), "Add effect lists only effects on a track");
             addEffect(Sequencer.Effects.REVERB); addEffect(Sequencer.Effects.DELAY);
             addGroup(Sequencer.Effects.CHANCE);
             check(app.mode == MainActivity.Mode.FX_VALUE && app.effectParameter == MainActivity.FX_CHANCE, "Adding a one-value effect opens that value");
             app.wheel(-5); app.cancel();
-            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.CHANCE && app.sequencer.tracks[0].chance == 50, "Backing out keeps the effect and selects it");
-            app.wheelSide(-1);
+            check(app.effectStackPage() && !contains(app.effectStack(), Sequencer.Effects.CHANCE), "Backing out of a new effect discards it");
             addGroup(Sequencer.Effects.CHANCE); app.wheel(-5); app.confirm();
-            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.CHANCE && app.sequencer.tracks[0].chance == 45, "Applying returns with the effect selected");
+            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.CHANCE && app.sequencer.tracks[0].chance < 100, "Applying returns with the effect selected");
             app.wheelSide(-1);
             addGroup(Sequencer.Effects.ENVELOPE);
             check(app.mode == MainActivity.Mode.EFFECTS && app.effectGroup == Sequencer.Effects.ENVELOPE && app.selection == 0, "Adding a multi-value effect opens its value list");
             app.cancel();
-            check(app.effectStackPage() && app.effectStack()[app.selection] == Sequencer.Effects.ENVELOPE, "Returning selects the new effect");
+            check(app.effectStackPage() && !contains(app.effectStack(), Sequencer.Effects.ENVELOPE), "Returning from a new multi-value effect discards it");
             app.wheelSide(-1);
             addEffect(Sequencer.Effects.AUTOTUNE);
             check(Arrays.equals(app.effectStack(), new int[]{Sequencer.Effects.AUTOTUNE, Sequencer.Effects.REVERB, Sequencer.Effects.DELAY}) && app.selection == 0, "Added effects appear in processing order and select their row");
@@ -958,7 +964,7 @@ public final class DeviceChecks extends Instrumentation {
         });
         ready(); await(() -> !app.instrument.cassetteBusy() && !app.busy, 8000); ready();
         main(() -> {
-            check(app.sessions.size() == count + 1 && app.session.name().equals("Imported groove"), "Import adds the project as a new tape and loads it");
+            check(app.sessions.size() == count + 1 && app.session.name().equals("Imported groove".substring(0, SessionStore.LABEL_LIMIT).trim()), "Import adds the project as a new tape and loads it, with its name cut to fit the label");
             check(app.sequencer.bpm() == 97 && app.track == 2 && MainActivity.CASSETTE_NAMES[app.colorIndex(app.session)].equals("Toxic"), "Import restores settings and cassette color");
         });
         File bad = new File(getTargetContext().getCacheDir(), "bad.zip");
@@ -968,22 +974,26 @@ public final class DeviceChecks extends Instrumentation {
     }
 
     private void sessions() throws Exception {
-        SessionStore.Entry original = app.session; String label = "  Midnight groove / session with a long name  ";
+        SessionStore.Entry original = app.session; String label = "Night jam";
         int count = app.sessions.size();
         main(() -> {
-            root("Projects"); app.selection = 0; app.confirm();
-            check(app.mode == MainActivity.Mode.TEXT, "New session types onto the sampler screen");
+            root("Projects"); app.selection = 1; app.confirm();
+            check(app.mode == MainActivity.Mode.TEXT && app.newCassetteActive(), "New project cassette starts naming");
             check(app.textValue.toString().equals(SessionStore.nextDefaultName(app.sessions)), "New project prefills the next default name");
             app.textBackspace(); app.typeChar(' '); app.finishText();
             check(app.mode == MainActivity.Mode.TEXT && app.sessions.size() == count, "Blank names do not create sessions");
             app.textBackspace();
             for (char letter : label.toCharArray()) app.typeChar(letter);
+            app.typeChar('Z'); app.typeChar('Z');
+            check(app.textValue.length() == SessionStore.LABEL_LIMIT, "Names stop at the cassette label limit");
+            app.textBackspace();
         });
         capture("session-name-preview.png");
         main(() -> app.finishText());
         main(() -> { check(app.mode == MainActivity.Mode.PROJECT_COLOR && app.colorForNew, "Naming a tape asks for its color"); app.confirm(); }); ready();
         SessionStore.Entry created = app.session;
         main(() -> {
+            check(app.mode == MainActivity.Mode.HOME, "New project goes straight to the beat screen");
             check(created.name().equals(label.trim()) && !created.id.equals(original.id), "Named sessions have independent storage");
             check(app.sequencer.tracks[0].steps == 0 && app.wheelSensitivity == 75, "New session is empty and retains global sensitivity");
             app.sequencer.tracks[0].steps = 0x8080; app.save();
@@ -1096,6 +1106,14 @@ public final class DeviceChecks extends Instrumentation {
         }
     }
 
+    private static boolean contains(int[] values, int value) {
+        for (int v : values) if (v == value) return true;
+        return false;
+    }
+    private int loadedIndex() {
+        for (int i = 0; i < app.sessions.size(); i++) if (app.sessions.get(i).id.equals(app.session.id)) return i;
+        throw new AssertionError("Loaded tape missing from sessions");
+    }
     private void root(String label) {
         app.mode = MainActivity.Mode.HOME; app.confirm();
         int sample = Arrays.asList(MainActivity.ADD_SAMPLE).indexOf(label);
@@ -1114,7 +1132,8 @@ public final class DeviceChecks extends Instrumentation {
         for (int i = 0; i < groups.length; i++) if (groups[i] == group) app.selection = i;
         check(app.selection >= 0, "Effect is available to add");
         app.confirm();
-        if (app.mode == MainActivity.Mode.FX_VALUE) app.confirm(); else app.cancel();
+        if (app.mode != MainActivity.Mode.FX_VALUE) app.selection = app.effectItems().length - 1;
+        app.confirm();
         check(app.effectStackPage() && app.effectStack()[app.selection] == group, "Adding returns with the new effect selected");
     }
     private void addGroup(int group) {

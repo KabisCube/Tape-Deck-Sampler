@@ -1277,6 +1277,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         line(c, from + 1, y + height, to - 1, y + height, light, 1f)
     }
 
+    private fun buttonLabel(c: Canvas, value: String) {
+        paint.typeface = monoBold; paint.textSize = CORNER_LABEL_TEXT
+        val metrics = paint.fontMetrics
+        plain(c, value, -paint.measureText(value) / 2, -(metrics.ascent + metrics.descent) / 2, CORNER_LABEL_TEXT, INK, monoBold)
+    }
+
     private fun plain(c: Canvas, value: String, x: Float, y: Float, size: Float, color: Int, font: Typeface) {
         paint.color = color; paint.textSize = size; paint.typeface = font; paint.style = Paint.Style.FILL
         c.drawText(value, x, y, paint)
@@ -1357,7 +1363,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.MENU -> menu(c, MainActivity.MENU)
             Mode.ADD_SAMPLE -> menu(c, MainActivity.ADD_SAMPLE)
             Mode.SPEECH, Mode.SPEECH_VOICE -> {
-                menu(c, if (app.mode == Mode.SPEECH) app.speechItems() else RetroSpeech.voices)
+                menu(c, if (app.mode == Mode.SPEECH) app.speechItems() else RetroSpeech.voices, rows = MENU_ROWS - 1)
                 text(c, String.format(Locale.US, "PLAY OR T%02d: PREVIEW", app.track + 1), LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
             }
             Mode.DEVICE_RECORD -> deviceRecording(c)
@@ -1535,9 +1541,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         text(c, MainActivity.seconds(track.start.toLong()) + " → " + MainActivity.seconds(track.end.toLong()) + " s", LCD_LEFT, LCD_HINT_Y, LCD_TITLE_TEXT, LCD, mono)
     }
 
-    private fun menu(c: Canvas, items: Array<String>, accent: Int = LCD, groups: IntArray? = null, enabled: ((Int) -> Boolean)? = null) {
-        val first = max(0, min(app.selection - MENU_ROWS / 2, items.size - MENU_ROWS))
-        for (i in first until min(items.size, first + MENU_ROWS)) {
+    private fun menu(c: Canvas, items: Array<String>, accent: Int = LCD, groups: IntArray? = null, enabled: ((Int) -> Boolean)? = null, rows: Int = MENU_ROWS) {
+        val first = max(0, min(app.selection - rows / 2, items.size - rows))
+        for (i in first until min(items.size, first + rows)) {
             val y = MENU_TOP + (i - first) * MENU_PITCH
             val selected = i == app.selection
             val rowAccent = if (enabled?.invoke(i) == false) MENU_DISABLED else accent
@@ -2381,13 +2387,13 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.save()
         c.translate(playX + (if (left) -CORNER_FACE_X else CORNER_FACE_X), PLAY_Y + CORNER_FACE_Y + (if (pressedPlay) PRESS_DEPTH else 0f))
         c.rotate(if (left) -45f else 45f)
-        centeredText(c, if (active) "PAUSE" else "PLAY", 0f, 0f, CORNER_LABEL_TEXT, INK, monoBold)
+        buttonLabel(c, if (active) "PAUSE" else "PLAY")
         c.restore()
         if (app.hasTimelineZoom()) buttonGlow(c, zoomX, ZOOM_Y + (if (pressedZoom) PRESS_DEPTH else 0f), if (left) buttonShape else zoomButtonShape, zoomLight)
         c.save()
         c.translate(zoomX + (if (left) CORNER_FACE_X else -CORNER_FACE_X), ZOOM_Y + CORNER_FACE_Y + (if (pressedZoom) PRESS_DEPTH else 0f))
         c.rotate(if (left) 45f else -45f)
-        centeredText(c, "ZOOM", 0f, 0f, CORNER_LABEL_TEXT, INK, monoBold)
+        buttonLabel(c, "ZOOM")
         c.restore()
     }
 
