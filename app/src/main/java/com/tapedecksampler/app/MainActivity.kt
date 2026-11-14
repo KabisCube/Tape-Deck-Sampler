@@ -48,7 +48,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 class MainActivity : Activity(), AudioEngine.Listener {
-    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_EDIT, PROJECT_EDIT_MENU, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
+    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
 
     fun interface Work { @Throws(Exception::class) fun run() }
 
@@ -162,6 +162,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     @JvmField var textTitle = ""
+    @JvmField var textCounted = false
     @JvmField val textValue = SpannableStringBuilder()
     private var textLimit = 0
     private var textDone: ((String) -> Unit)? = null
@@ -169,8 +170,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private var textReturnSelection = 0
 
     fun textEntry(title: String, initial: String, limit: Int, names: Boolean, done: (String) -> Unit) {
+        newFromShelf = false; renaming = false
         textReturnMode = mode; textReturnSelection = selection
-        textTitle = title; textLimit = limit; textDone = done
+        textTitle = title; textLimit = limit; textDone = done; textCounted = names
         textValue.clear(); textValue.clearSpans(); textValue.append(initial.take(limit))
         Selection.setSelection(textValue, if (names) 0 else textValue.length, textValue.length)
         mode = Mode.TEXT
@@ -213,6 +215,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
         if (mode != Mode.TEXT) return
         editSelection("")
     }
+
+    fun textLimit() = textLimit
 
     fun textChanged() {
         if (textValue.length > textLimit) textValue.delete(textLimit, textValue.length)
@@ -976,23 +980,49 @@ class MainActivity : Activity(), AudioEngine.Listener {
         audio.setClapClock(null)
     }
 
-    fun requestNewSession() {
+    @JvmOverloads
+    fun requestNewSession(fromShelf: Boolean = false) {
         if (busy) return
-        textEntry("NEW TAPE", SessionStore.nextDefaultName(sessions), SessionStore.MAX_NAME_LENGTH, true) { label ->
+        textEntry("NEW TAPE", SessionStore.nextDefaultName(sessions), SessionStore.LABEL_LIMIT, true) { label ->
             pendingName = label; colorForNew = true; editTarget = null
             mode = Mode.PROJECT_COLOR; selection = CASSETTE_ROWS[0] + sessions.size % (CASSETTE_ROWS[1] + CASSETTE_ROWS[2])
             instrument.invalidate()
         }
+        newFromShelf = fromShelf
     }
 
     @JvmOverloads
     fun createSession(name: String, color: Int = -1) { switchSession(null, name, color, null) }
 
-    fun browseList(): ArrayList<SessionStore.Entry> = browseListFor(mode)
+    fun browseList(): ArrayList<SessionStore.Entry> = sessions
 
-    fun browseListFor(view: Mode): ArrayList<SessionStore.Entry> {
-        if (view != Mode.PROJECT_OPEN) return sessions
-        return sessions.filterTo(ArrayList()) { it.id != session.id }
+    fun projectItems(): Array<String> = if (noTape) arrayOf("New", PROJECT_ITEMS[PROJECT_OPEN]) else PROJECT_ITEMS
+
+    fun projectSelection(item: Int) = item + if (noTape) 1 else 0
+
+    fun shelfOffset() = if (mode == Mode.PROJECT_OPEN) 2 else 0
+
+    fun shelfSize() = sessions.size + shelfOffset()
+
+    fun importSelected() = mode == Mode.PROJECT_OPEN && selection == 0
+
+    fun newSelected() = mode == Mode.PROJECT_OPEN && selection == 1
+
+    private var newFromShelf = false
+
+    fun newCassetteActive() = newFromShelf && (mode == Mode.TEXT || mode == Mode.PROJECT_COLOR && colorForNew)
+
+    private var openFromMenu = false
+    private var projectsAfterLoad = false
+
+    private fun browseShelf() {
+        mode = Mode.PROJECT_OPEN
+        selection = if (noTape) sessions.size + 1 else sessionIndex(session) + 2
+    }
+
+    private fun requestImport() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")).addCategory(Intent.CATEGORY_OPENABLE), REQUEST_IMPORT_PROJECT)
     }
 
     fun switchSession(target: SessionStore.Entry?) {
@@ -1004,27 +1034,31 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun cassetteColor(entry: SessionStore.Entry) = CASSETTE_COLORS[colorIndex(entry)]
 
-    fun carouselMode() = mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_EDIT || mode == Mode.PROJECT_EDIT_MENU || mode == Mode.PROJECT_COLOR || mode == Mode.PROJECT_DELETE
+    fun carouselMode() = mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_COLOR || mode == Mode.PROJECT_DELETE
 
     private fun browsed(): SessionStore.Entry? {
         val list = browseList()
-        return if (list.isEmpty()) null else list[min(selection, list.size - 1)]
+        return if (list.isEmpty()) null else list[max(0, min(selection - shelfOffset(), list.size - 1))]
     }
 
     fun carouselName(): String {
-        if (mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_EDIT) return browsed()?.name() ?: ""
+        if (importSelected()) return IMPORT_LABEL
+        if (newSelected()) return NEW_LABEL
+        if (mode == Mode.PROJECT_OPEN) return browsed()?.name() ?: ""
         if (mode == Mode.PROJECT_COLOR && colorForNew) return pendingName
         return editTarget?.name() ?: ""
     }
 
     fun carouselColor(): Int {
-        if (mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_EDIT) return browsed()?.let { cassetteColor(it) } ?: CASSETTE_COLORS[0]
+        if (mode == Mode.PROJECT_OPEN) return browsed()?.let { cassetteColor(it) } ?: CASSETTE_COLORS[0]
         if (mode == Mode.PROJECT_COLOR) return CASSETTE_COLORS[selection]
         return editTarget?.let { cassetteColor(it) } ?: CASSETTE_COLORS[0]
     }
 
     fun carouselKey(): Int = when {
-        mode == Mode.PROJECT_OPEN || mode == Mode.PROJECT_EDIT -> browsed()?.number ?: -1
+        importSelected() -> IMPORT_KEY
+        newSelected() -> NEW_KEY
+        mode == Mode.PROJECT_OPEN -> browsed()?.number ?: -1
         mode == Mode.PROJECT_COLOR && colorForNew -> -1
         else -> editTarget?.number ?: -1
     }
@@ -1043,27 +1077,40 @@ class MainActivity : Activity(), AudioEngine.Listener {
     }
 
     private fun openProject(target: SessionStore.Entry) {
-        if (target.id == session.id) { mode = Mode.HOME; message = "TAPE ALREADY LOADED"; return }
+        if (target.id == session.id) { mode = if (openFromMenu) Mode.PROJECTS else Mode.HOME; selection = 0; return }
+        projectsAfterLoad = openFromMenu
         instrument.insertCassette(target.name(), cassetteColor(target), deckName(), cassetteColor(session))
         switchSession(target, "", -1, null)
     }
 
     private fun renameProject() {
         val target = editTarget ?: return
-        textEntry("RENAME TAPE", target.name(), SessionStore.MAX_NAME_LENGTH, true) { label ->
+        textEntry("RENAME TAPE", target.name(), SessionStore.LABEL_LIMIT, true) { label ->
+            renaming = false
             work("RENAMING TAPE", { sessionStore.rename(target, label) }) {
                 refreshSessions()
                 checkSecrets()
                 message = "RENAMED $label"
             }
         }
+        renaming = true
+    }
+
+    private var renaming = false
+
+    fun renameActive() = renaming && mode == Mode.TEXT
+
+    private fun editLoaded(action: () -> Unit) {
+        if (noTape) { error("Insert a tape first"); return }
+        editTarget = session
+        action()
     }
 
     private fun recolorProject(color: Int) {
         val target = editTarget ?: return
         work("RECOLORING TAPE", { sessionStore.recolor(target, CASSETTE_NAMES[color]) }) {
             refreshSessions()
-            mode = Mode.PROJECT_EDIT_MENU; selection = 1
+            mode = Mode.PROJECTS; selection = projectSelection(PROJECT_RECOLOR)
         }
     }
 
@@ -1079,8 +1126,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             runOnUiThread {
                 if (shown != null) error(shown)
                 refreshSessions()
-                if (mode == Mode.PROJECT_EDIT && sessions.isEmpty()) { mode = Mode.PROJECTS; selection = PROJECT_NEW }
-                else if (mode == Mode.PROJECT_EDIT) selection = min(selection, sessions.size - 1)
+                if (mode == Mode.PROJECT_OPEN) selection = min(selection, shelfSize() - 1)
                 instrument.invalidate()
             }
         }
@@ -1088,20 +1134,19 @@ class MainActivity : Activity(), AudioEngine.Listener {
         if (target.id == session.id) {
             cancelLive(); sequencer.stop(); audio.stop()
             noTape = true
-            instrument.insertCassette(null, 0, target.name(), cassetteColor(target))
-            mode = Mode.PROJECTS; selection = PROJECT_NEW
-            message = "DELETED " + target.name()
-            worker.execute(remove)
-        } else {
-            mode = Mode.PROJECT_EDIT; selection = 0
-            message = "DELETED " + target.name()
-            worker.execute(remove)
+            instrument.throwCassette(target.name(), cassetteColor(target))
         }
+        sessions = sessions.filterTo(ArrayList()) { it.id != target.id }
+        openFromMenu = false
+        browseShelf()
+        message = "DELETED " + target.name()
+        worker.execute(remove)
     }
 
     private fun switchSession(target: SessionStore.Entry?, name: String, color: Int, afterClose: Runnable?) {
         if (busy || mode == Mode.RECORDING || (target != null && target.id == session.id)) {
             if (!busy && mode != Mode.RECORDING && target != null) mode = Mode.HOME
+            projectsAfterLoad = false
             return
         }
         save()
@@ -1113,7 +1158,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
             activateSession(preparedSession!!)
             preparedSession = null
             try { sessions = sessionStore.list() } catch (e: Exception) { error(e.message) }
-            mode = Mode.HOME
+            mode = if (projectsAfterLoad) Mode.PROJECTS else Mode.HOME
+            projectsAfterLoad = false
             selection = 0
             checkSecrets()
             if (foreground) audio.start()
@@ -1976,9 +2022,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 }
                 liveEffect(effectParameter, effectValue)
             }
-            Mode.PROJECTS -> selection = moveSelection(delta, PROJECT_ITEMS.size)
-            Mode.PROJECT_OPEN, Mode.PROJECT_EDIT -> selection = moveSelection(delta, max(1, browseList().size))
-            Mode.PROJECT_EDIT_MENU -> selection = moveSelection(delta, PROJECT_EDIT_ITEMS.size)
+            Mode.PROJECTS -> selection = moveSelection(delta, projectItems().size)
+            Mode.PROJECT_OPEN -> selection = moveSelection(delta, max(1, shelfSize()))
             Mode.PROJECT_COLOR -> selection = moveSelection(delta, CASSETTE_COLORS.size)
             Mode.START -> {
                 start = (start + step).coerceIn(0L, Tape.LENGTH - MIN_SLICE_FRAMES.toLong()).toInt()
@@ -2187,24 +2232,20 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.FX_ADD -> openAddedEffect()
             Mode.FX_REORDER -> confirmReorder()
             Mode.FX_VALUE -> commitEffect()
-            Mode.PROJECTS -> when (selection) {
+            Mode.PROJECTS -> when (selection - projectSelection(0)) {
                 PROJECT_NEW -> requestNewSession()
-                PROJECT_OPEN -> if (browseListFor(Mode.PROJECT_OPEN).isEmpty()) error("No other tapes to open yet") else { mode = Mode.PROJECT_OPEN; selection = 0 }
-                PROJECT_EDIT -> if (sessions.isEmpty()) error("No tapes yet") else { mode = Mode.PROJECT_EDIT; selection = if (noTape) 0 else sessionIndex(session) }
-                PROJECT_EXPORT -> if (noTape) error("Insert a tape first") else { mode = Mode.EXPORT; selection = 0 }
-                else -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
-                    .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")).addCategory(Intent.CATEGORY_OPENABLE), REQUEST_IMPORT_PROJECT)
+                PROJECT_OPEN -> { openFromMenu = false; browseShelf() }
+                PROJECT_RENAME -> editLoaded { renameProject() }
+                PROJECT_RECOLOR -> editLoaded { colorForNew = false; mode = Mode.PROJECT_COLOR; selection = colorIndex(session) }
+                PROJECT_EXPORT -> editLoaded { mode = Mode.EXPORT; selection = 0 }
+                else -> editLoaded { mode = Mode.PROJECT_DELETE }
             }
-            Mode.PROJECT_OPEN -> browsed()?.let { openProject(it) }
-            Mode.PROJECT_EDIT -> if (sessions.isNotEmpty()) { editTarget = sessions[min(selection, sessions.size - 1)]; mode = Mode.PROJECT_EDIT_MENU; selection = 0 }
-            Mode.PROJECT_EDIT_MENU -> when (selection) {
-                EDIT_RENAME -> renameProject()
-                EDIT_COLOR -> { colorForNew = false; mode = Mode.PROJECT_COLOR; selection = editTarget?.let { colorIndex(it) } ?: 0 }
-                else -> mode = Mode.PROJECT_DELETE
-            }
+            Mode.PROJECT_OPEN -> if (importSelected()) requestImport() else if (newSelected()) requestNewSession(true) else browsed()?.let { openProject(it) }
             Mode.PROJECT_COLOR ->
                 if (colorForNew) {
                     val color = selection
+                    projectsAfterLoad = false
+                    newFromShelf = false
                     instrument.insertCassette(pendingName, CASSETTE_COLORS[color], deckName(), cassetteColor(session))
                     createSession(pendingName, color)
                 } else recolorProject(selection)
@@ -2268,7 +2309,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.TEMPO -> { mode = Mode.MENU; selection = MENU_TEMPO }
             Mode.BPM -> { sequencer.tempo(tempoBefore); mode = Mode.TEMPO; selection = TEMPO_BPM }
             Mode.SWING -> { sequencer.swing(swingBefore); mode = Mode.TEMPO; selection = TEMPO_SWING }
-            Mode.EXPORT -> { mode = Mode.PROJECTS; selection = PROJECT_EXPORT }
+            Mode.EXPORT -> { mode = Mode.PROJECTS; selection = projectSelection(PROJECT_EXPORT) }
             Mode.EXPORT_LOOPS -> { mode = Mode.EXPORT; selection = EXPORT_WAV }
             Mode.SYSTEM -> { mode = Mode.MENU; selection = MENU_SYSTEM }
             Mode.BACK -> leaveBack()
@@ -2281,13 +2322,12 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.VIBRATION -> { setVibrationIntensity(vibrationBefore); mode = Mode.SYSTEM; selection = SYSTEM_VIBRATION }
             Mode.SENSITIVITY -> { wheelSensitivity = wheelBefore; mode = Mode.SYSTEM; selection = SYSTEM_WHEEL }
             Mode.PROJECTS -> if (!noTape) { mode = Mode.MENU; selection = MENU_PROJECT }
-            Mode.PROJECT_OPEN -> { mode = Mode.PROJECTS; selection = PROJECT_OPEN }
-            Mode.PROJECT_EDIT -> { mode = Mode.PROJECTS; selection = PROJECT_EDIT }
-            Mode.PROJECT_EDIT_MENU -> { mode = Mode.PROJECT_EDIT; selection = sessionIndex(editTarget) }
+            Mode.PROJECT_OPEN -> if (openFromMenu && !noTape) { mode = Mode.MENU; selection = MENU_PROJECT } else { mode = Mode.PROJECTS; selection = projectSelection(PROJECT_OPEN) }
             Mode.PROJECT_COLOR ->
-                if (colorForNew) { mode = Mode.PROJECTS; selection = PROJECT_NEW }
-                else { mode = Mode.PROJECT_EDIT_MENU; selection = EDIT_COLOR }
-            Mode.PROJECT_DELETE -> { mode = Mode.PROJECT_EDIT_MENU; selection = EDIT_DELETE }
+                if (colorForNew && newFromShelf) { newFromShelf = false; mode = Mode.PROJECT_OPEN; selection = 1 }
+                else if (colorForNew) { mode = Mode.PROJECTS; selection = projectSelection(if (noTape) PROJECT_NEW else PROJECT_OPEN) }
+                else { mode = Mode.PROJECTS; selection = projectSelection(PROJECT_RECOLOR) }
+            Mode.PROJECT_DELETE -> { mode = Mode.PROJECTS; selection = projectSelection(PROJECT_REMOVE) }
             Mode.EFFECTS ->
                 if (effectGroup >= 0 && addSnapshot != null) discardAdded()
                 else if (effectGroup >= 0) { selection = stackRow(effectGroup); effectGroup = -1 }
@@ -2315,7 +2355,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             MENU_ADD_SAMPLE -> { mode = Mode.ADD_SAMPLE; selection = 0 }
             MENU_TEMPO -> { mode = Mode.TEMPO; selection = 0 }
             MENU_SYNC -> if (clapClock == null) { setSyncEnabled(true); beginClap() } else { mode = Mode.SYNC; selection = 0 }
-            MENU_PROJECT -> { mode = Mode.PROJECTS; selection = 0 }
+            MENU_PROJECT -> { openFromMenu = true; browseShelf() }
             MENU_SYSTEM -> { mode = Mode.SYSTEM; selection = 0 }
             MENU_BACK -> { mode = Mode.BACK; selection = 0 }
         }
@@ -2551,8 +2591,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.SPEECH_VOICE -> "SPEECH / VOICE"
         Mode.DEVICE_RECORD -> "RECORD / DEVICE"
         Mode.SYSTEM -> "SYSTEM"
-        Mode.EXPORT -> "PROJECT / EXPORT"
-        Mode.EXPORT_LOOPS -> "PROJECT / EXPORT / WAV"
+        Mode.EXPORT -> "PROJECTS / EXPORT"
+        Mode.EXPORT_LOOPS -> "PROJECTS / EXPORT / WAV"
         Mode.BACK -> "BACK"
         Mode.SYNC -> "SYNC"
         Mode.SYNC_CLAP -> "SYNC / CLAP"
@@ -2577,12 +2617,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.TEMPO -> "TEMPO"
         Mode.BPM -> "TEMPO / BPM"
         Mode.SWING -> "TEMPO / SWING"
-        Mode.PROJECTS -> "PROJECT"
-        Mode.PROJECT_OPEN -> "PROJECT / OPEN"
-        Mode.PROJECT_EDIT -> "PROJECT / EDIT"
-        Mode.PROJECT_EDIT_MENU -> "PROJECT / EDIT TAPE"
-        Mode.PROJECT_COLOR -> if (colorForNew) "PROJECT / NEW / COLOR" else "PROJECT / EDIT / COLOR"
-        Mode.PROJECT_DELETE -> "PROJECT / DELETE"
+        Mode.PROJECTS -> "PROJECTS"
+        Mode.PROJECT_OPEN -> "PROJECTS / OPEN"
+        Mode.PROJECT_COLOR -> if (colorForNew) "PROJECTS / NEW / COLOR" else "PROJECTS / EDIT / COLOR"
+        Mode.PROJECT_DELETE -> "PROJECTS / DELETE"
         else -> ""
     }
 
@@ -2806,6 +2844,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun importProject(uri: Uri) {
         importedEntry = null
+        val limit = SessionStore.LABEL_LIMIT
         work("IMPORTING PROJECT", {
             var project: JSONObject? = null
             val wave = File.createTempFile("import-", ".wav", cacheDir)
@@ -2822,7 +2861,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 if (loaded == null || "tapedecksampler-project" != loaded.optString("format") || wave.length() == 0L) throw IOException("Not a Tape Deck Sampler project")
                 var name = loaded.optString("name", "").trim()
                 if (name.isEmpty()) name = SessionStore.nextDefaultName(sessions)
-                if (name.length > SessionStore.MAX_NAME_LENGTH) name = name.substring(0, SessionStore.MAX_NAME_LENGTH).trim()
+                if (name.length > limit) name = name.substring(0, limit).trim()
                 val entry = sessionStore.create(name, CASSETTE_NAMES[cassetteIndex(loaded.optString("color", ""), 0)])
                 try {
                     java.nio.file.Files.move(wave.toPath(), entry.tape.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
@@ -3001,13 +3040,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val SPEECH_PREVIEW = 2
         const val SPEECH_ADD = 3
         private const val SPEECH_LABEL_LENGTH = 24
-        const val PROJECT_NEW = 0
-        const val PROJECT_OPEN = 1
-        const val PROJECT_EDIT = 2
+        const val IMPORT_KEY = -2
+        const val IMPORT_LABEL = "Import project"
+        const val NEW_KEY = -3
+        const val NEW_LABEL = "New project"
+        const val PROJECT_OPEN = 0
+        const val PROJECT_NEW = -1
+        const val PROJECT_RENAME = 1
+        const val PROJECT_RECOLOR = 2
         const val PROJECT_EXPORT = 3
-        const val EDIT_RENAME = 0
-        const val EDIT_COLOR = 1
-        const val EDIT_DELETE = 2
+        const val PROJECT_REMOVE = 4
         const val EXPORT_MIDI = 0
         const val EXPORT_WAV = 1
         const val EXPORT_PROJECT = 2
@@ -3098,11 +3140,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val FX_CHOIR_DETUNE = 42
         const val FX_CHOIR_OFFSET = 43
         private const val LEGACY_ROBOT_SCALE = 5
-        @JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Sync", "Project", "System", "Check the back")
+        @JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Sync", "Projects", "System", "Check the back")
         @JvmField val EXPORT_ITEMS = arrayOf("As MIDI", "As WAV", "As Project")
         @JvmField val ADD_SAMPLE = arrayOf("Record microphone", "Record device", "Import sample", "Text to speech", "Synth")
-        @JvmField val PROJECT_ITEMS = arrayOf("New", "Open", "Edit", "Export", "Import")
-        @JvmField val PROJECT_EDIT_ITEMS = arrayOf("Rename", "Color", "Delete")
+        @JvmField val PROJECT_ITEMS = arrayOf("Open", "Name", "Color", "Export", "Delete")
         const val PAGE_NOTE_NONE = 0
         const val PAGE_NOTE_PASTED = 1
         const val PAGE_NOTE_MOVED = 2
@@ -3132,7 +3173,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass", "Reverse", "Choir")
         @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY")
         const val ALONE_REASON = "ADD FILTER, DELAY, DIST OR REVERB"
-        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.CHOIR, Sequencer.Effects.REVERSE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
+        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.REVERSE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.CHOIR, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
         @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE), intArrayOf(), intArrayOf(FX_CHOIR_COPIES, FX_CHOIR_DETUNE, FX_CHOIR_OFFSET))
         @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"), arrayOf(), arrayOf("Copies", "Detune", "Offset"))
         const val SECRET_TRANS = 0

@@ -394,13 +394,13 @@ public final class DeviceChecks extends Instrumentation {
     private void controls() throws Exception {
         main(() -> {
             check(app.tape != null && app.audio != null, "Session and audio engine launch");
-            check(Arrays.equals(MainActivity.MENU, new String[]{"Track effects", "Add sample", "Tempo", "Sync", "Project", "System", "Check the back"}), "Slicing is accessed through the wheel and the back view is last in the main menu");
+            check(Arrays.equals(MainActivity.MENU, new String[]{"Track effects", "Add sample", "Tempo", "Sync", "Projects", "System", "Check the back"}), "Slicing is accessed through the wheel and the back view is last in the main menu");
             app.batteries.found = false;
             check(app.systemItems().length == 4 && !Arrays.asList(app.systemItems()).contains("Check the back"), "System contains device settings");
-            root("Project"); app.selection = 3; app.confirm();
+            root("Projects"); app.selection = 3; app.confirm();
             check(app.mode == MainActivity.Mode.EXPORT && Arrays.equals(MainActivity.EXPORT_ITEMS, new String[]{"As MIDI", "As WAV", "As Project"}), "Export offers both file formats and the project");
             app.wheel(100); check(app.selection == 2, "Export stops at its last item");
-            app.cancel(); check(app.mode == MainActivity.Mode.PROJECTS && app.selection == 3, "Export returns to the project menu");
+            app.cancel(); check(app.mode == MainActivity.Mode.PROJECTS && app.selection == MainActivity.PROJECT_EXPORT, "Export returns to the project menu");
             app.wheelSensitivity = 100; app.mode = MainActivity.Mode.HOME; app.track = 0;
             int bpm = app.sequencer.bpm(); app.wheel(1);
             check(app.mode == MainActivity.Mode.HOME && app.track == 1 && app.sequencer.bpm() == bpm, "Home wheel selects a track without opening the menu");
@@ -971,7 +971,7 @@ public final class DeviceChecks extends Instrumentation {
         SessionStore.Entry original = app.session; String label = "  Midnight groove / session with a long name  ";
         int count = app.sessions.size();
         main(() -> {
-            root("Project"); app.selection = 0; app.confirm();
+            root("Projects"); app.selection = 0; app.confirm();
             check(app.mode == MainActivity.Mode.TEXT, "New session types onto the sampler screen");
             check(app.textValue.toString().equals(SessionStore.nextDefaultName(app.sessions)), "New project prefills the next default name");
             app.textBackspace(); app.typeChar(' '); app.finishText();
@@ -1089,9 +1089,8 @@ public final class DeviceChecks extends Instrumentation {
             case EFFECTS: case FX_REORDER: return app.effectItems();
             case FX_ADD: return app.addItems();
             case TEMPO: return app.tempoItems();
-            case PROJECTS: return MainActivity.PROJECT_ITEMS;
-            case PROJECT_EDIT_MENU: return MainActivity.PROJECT_EDIT_ITEMS;
-            case PROJECT_OPEN: case PROJECT_EDIT: return new String[app.sessions.size()];
+            case PROJECTS: return app.projectItems();
+            case PROJECT_OPEN: return new String[app.shelfSize()];
             case PROJECT_COLOR: return MainActivity.CASSETTE_NAMES;
             default: return null;
         }

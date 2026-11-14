@@ -88,6 +88,7 @@ class SessionStore @Throws(IOException::class) constructor(files: File) {
     companion object {
         private val DEFAULT_NAME = Regex("Project ([0-9]{2,6})")
         const val MAX_NAME_LENGTH = 48
+        const val LABEL_LIMIT = 10
         private const val MAX_PROJECTS = 999999
         private const val FOLDER_PREFIX = "session-"
         private val SESSION_ID = Regex("$FOLDER_PREFIX[0-9]{6}")

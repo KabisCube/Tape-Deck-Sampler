@@ -57,7 +57,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private val buttonShape = buttonShape(false)
     private val zoomButtonShape = buttonShape(true)
     private val trackButtonShape = trackButtonShape()
-    private val playIcon = playIcon()
     private val zoomArrow = Path()
     private val iconPath = Path()
     private val zoomLight = buttonLight(0xc8efff)
@@ -85,6 +84,19 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private var auditText = false
     private val textBoxes = ArrayList<TextBox>()
     private val hatchMatrix = Matrix()
+    private val hatchInverse = Matrix()
+    private var hatchOn = false
+    private var frameT = -1L
+    private var frameSpool = 0f
+    private var deckOut = 0f
+    private var newShown = false
+    private var shelfEnter = 0L
+    private var shelfAll = false
+    private var throwStart = -1L
+    private var throwName = ""
+    private var throwColor = 0
+    private var newPeelStart = 0L
+    private var deckFrame = 0L
     private var marker: Typeface? = null
     private var insertStart = -1L
     private var carouselStart = 0L
@@ -210,7 +222,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         turningNow = false
         if (lidOnTop) travellingLid(c, flip, back)
         c.restore()
-        val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || app.carouselMode() || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0
+        val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || app.carouselMode() || app.newCassetteActive() || app.renameActive() || throwStart >= 0 || deckOut > 0 || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0
         if (animating && (splitGroup >= 0 || moving)) postInvalidateOnAnimation()
         else if (animating && (app.sequencer.isPlaying() || app.sequencer.isSyncWaiting() || app.sequencer.isPreviewing() || app.mode == Mode.RECORDING || app.mode == Mode.FX_REORDER || app.busy)) postInvalidateDelayed(FRAME_MILLIS)
     }
@@ -296,7 +308,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         bevel(c)
         var t = if (insertStart < 0) -1L else now - insertStart
         if (t >= CLOSE_END) { insertStart = -1; t = -1 }
-        val hatch = if (t < 0) 0f else hatchAngle(t)
+        val hatch = if (t < 0) deckHatch() else hatchAngle(t)
+        hatchOn = hatch > 0
+        frameT = t
+        frameSpool = spoolProgress()
         c.save()
         c.translate(0f, TOP_SHIFT)
         if (hatch > 0) hatchWell(c, t)
@@ -323,6 +338,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.restore()
         carousel(c, now)
         if (t >= 0) risingCassette(c, t)
+        if (throwStart >= 0) thrownCassette(c, now)
     }
 
     private fun marker(): Typeface {
@@ -347,6 +363,24 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     fun cassetteBusy() = insertStart >= 0
 
+    fun throwCassette(name: String, color: Int) {
+        throwName = name; throwColor = color
+        throwStart = SystemClock.uptimeMillis()
+        deckOut = 0f
+        invalidate()
+    }
+
+    private fun thrownCassette(c: Canvas, now: Long) {
+        val p = (now - throwStart) / THROW_MILLIS
+        if (p >= 1f) { throwStart = -1; return }
+        val x = UI_CENTER_X + 520 * p
+        val y = CAROUSEL_Y - 380 * p + 1000 * p * p
+        c.save()
+        c.rotate(320 * p, x, y)
+        cassette(c, x, y, throwColor, throwName, 0f)
+        c.restore()
+    }
+
     private fun hatchAngle(t: Long): Float = when {
         t < RISE_END -> 0f
         t < OPEN_END -> HATCH_DEGREES * ease((t - RISE_END) / (OPEN_END - RISE_END).toFloat())
@@ -369,15 +403,23 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         rect(c, HATCH_L, HATCH_T, HATCH_R, HATCH_B, 10f, 0xff16171a.toInt())
         rect(c, HATCH_L + 6, HATCH_T + 4, HATCH_R - 6, HATCH_T + 30, 6f, 0xff22241f.toInt())
         for (i in 0 until 2) circle(c, UI_CENTER_X + (if (i == 0) -SPOOL_GAP else SPOOL_GAP), SLOT_Y - 12, 7f, 0xff3a3c38.toInt())
+        wellCassette(c, t)
+    }
+
+    private fun wellCassette(c: Canvas, t: Long) {
         var y = SLOT_Y
         var name = ejectName
         var color = ejectColor
-        if (t in OPEN_END until EJECT_END) y = SLOT_Y + (OUT_Y - SLOT_Y) * ease((t - OPEN_END) / (EJECT_END - OPEN_END).toFloat())
+        if (t < 0) {
+            y = deckWellY()
+            name = if (app.noTape || deckOut >= DECK_LIFTED) null else app.session.name()
+            color = app.cassetteColor(app.session)
+        } else if (t in OPEN_END until EJECT_END) y = SLOT_Y + (OUT_Y - SLOT_Y) * ease((t - OPEN_END) / (EJECT_END - OPEN_END).toFloat())
         else if (t >= EJECT_END) {
             name = insertName; color = insertColor
             y = if (t >= LOAD_END) SLOT_Y else OUT_Y + (SLOT_Y - OUT_Y) * ease((t - EJECT_END) / (LOAD_END - EJECT_END).toFloat())
         }
-        if (name != null) cassette(c, UI_CENTER_X, y, color, name, 0f)
+        if (name != null) cassette(c, UI_CENTER_X, y, color, name, frameSpool)
     }
 
     private fun hatchPanel(c: Canvas, degrees: Float) {
@@ -401,18 +443,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     private fun topWindow(c: Canvas) {
         val left = 27f; val right = 373f; val top = 10f; val bottom = 27f + SCREEN_DROP
-        val t = if (insertStart < 0) -1L else SystemClock.uptimeMillis() - insertStart
-        val seated = t < 0 || t < OPEN_END || t >= LOAD_END
-        val color = if (t < 0) app.cassetteColor(app.session) else if (t >= EJECT_END) insertColor else ejectColor
         rect(c, ROW_LEFT, 5f, ROW_RIGHT, 32f + SCREEN_DROP, 7f, if (app.darkTheme) 0xff74766a.toInt() else 0xffb2b1a5.toInt())
         rect(c, 20f, 7f, 380f, 30f + SCREEN_DROP, 5f, INK)
         rect(c, left, top, right, bottom, 2f, 0xff1b1c19.toInt())
         c.save(); c.clipRect(left, top, right, bottom)
-        if (seated) {
-            val name = if (t < 0) (if (app.noTape) null else app.session.name()) else if (t >= EJECT_END) insertName else ejectName
-            if (name != null) cassette(c, UI_CENTER_X, top + 4 + CASSETTE_H / 2, color, name, spoolProgress())
-            rect(c, left, top, right, bottom, 0f, 0x30000000)
-        }
+        c.save()
+        if (hatchOn && hatchMatrix.invert(hatchInverse)) c.concat(hatchInverse)
+        wellCassette(c, frameT)
+        c.restore()
+        rect(c, left, top, right, bottom, 0f, 0x30000000)
         paint.shader = LinearGradient(0f, top, 0f, bottom, 0x30ffffff, 0x08ffffff, Shader.TileMode.CLAMP)
         c.drawRect(left, top, right, bottom, paint)
         paint.shader = null
@@ -449,7 +488,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.drawRoundRect(left + 3.5f, top + 3.5f, right - 3.5f, bottom - 3.5f, 8f, 8f, paint)
         paint.strokeWidth = 2f; paint.color = (vivid and 0xffffff) or 0xd0000000.toInt()
         iconPath.reset()
-        iconPath.moveTo(left + 7.5f, bottom - 30); iconPath.lineTo(left + 7.5f, top + 14); iconPath.quadTo(left + 7.5f, top + 7.5f, left + 14, top + 7.5f); iconPath.lineTo(right - 30, top + 7.5f)
+        iconPath.moveTo(left + 7.5f, bottom - 12); iconPath.lineTo(left + 7.5f, top + 14); iconPath.quadTo(left + 7.5f, top + 7.5f, left + 14, top + 7.5f); iconPath.lineTo(right - 12, top + 7.5f)
         c.drawPath(iconPath, paint)
         paint.strokeWidth = 1.5f; paint.color = dark or 0x90000000.toInt()
         c.drawRoundRect(left, top, right, bottom, 10f, 10f, paint)
@@ -502,16 +541,21 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 c.restore()
             }
         }
-        val labelLeft = cx - 74
-        val labelRight = cx + 74
+        val labelLeft = cx - LABEL_HALF
+        val labelRight = cx + LABEL_HALF
         val labelTop = top + 116
         val labelBottom = top + 140
         rect(c, labelLeft, labelTop, labelRight, labelBottom, 2f, 0xfff4f0e4.toInt())
         rect(c, labelLeft, labelBottom - 3, labelRight, labelBottom, 0f, rgb or 0xff000000.toInt())
-        paint.typeface = marker(); paint.textSize = 17f
-        val shown = TextUtils.ellipsize(name ?: "", paint, labelRight - labelLeft - 12, TextUtils.TruncateAt.END).toString()
+        paint.typeface = marker(); paint.textSize = LABEL_TEXT
+        val room = labelRight - labelLeft - 12
+        var shown = name ?: ""
+        if (labelText(null, shown, 0f, 0f) > room) {
+            while (shown.isNotEmpty() && labelText(null, "$shown…", 0f, 0f) > room) shown = shown.dropLast(1)
+            shown += "…"
+        }
         paint.color = 0xff1f2a5c.toInt()
-        c.drawText(shown, cx - paint.measureText(shown) / 2, labelBottom - 8, paint)
+        labelText(c, shown, cx - labelText(null, shown, 0f, 0f) / 2, labelBottom - 8)
         val screws = arrayOf(floatArrayOf(left + 11, top + 11), floatArrayOf(right - 11, top + 11), floatArrayOf(left + 11, bottom - 11), floatArrayOf(right - 11, bottom - 11), floatArrayOf(cx, bottom - 28))
         for (screw in screws) {
             circle(c, screw[0], screw[1], 4.2f, 0xff1c1c1e.toInt())
@@ -522,6 +566,29 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         iconPath.reset()
         iconPath.moveTo(left + 10, top + 4); iconPath.lineTo(left + 64, top + 4); iconPath.lineTo(left + 4, bottom - 44); iconPath.lineTo(left + 4, top + 20); iconPath.close()
         c.drawPath(iconPath, paint)
+    }
+
+    private fun labelText(c: Canvas?, value: String, x: Float, y: Float): Float {
+        val normal = paint.measureText("T")
+        var at = x
+        var from = 0
+        for (i in 0..value.length) {
+            if (i < value.length && value[i] !in SQUEEZED) continue
+            if (i > from) {
+                val run = value.substring(from, i)
+                c?.drawText(run, at, y, paint)
+                at += paint.measureText(run)
+            }
+            if (i < value.length) {
+                val glyph = value[i].toString()
+                paint.textScaleX = min(1f, normal / paint.measureText(glyph))
+                c?.drawText(glyph, at, y, paint)
+                at += paint.measureText(glyph)
+                paint.textScaleX = 1f
+            }
+            from = i + 1
+        }
+        return at - x
     }
 
     private fun clapReady() = app.mode == Mode.SYNC_CLAP && app.clapClock == null && app.clapStatus.startsWith("READY,")
@@ -543,9 +610,56 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         rect(c, cx - CASSETTE_W / 2 - 8, cy - CASSETTE_H / 2 + 16, cx + CASSETTE_W / 2 - 10, cy + CASSETTE_H / 2 + 15, 13f, 0x26000000)
     }
 
+    private fun loadedKey() = if (app.noTape) Int.MIN_VALUE + 1 else app.session.number
+
+    private fun stepDeckOut(now: Long) {
+        val dt = min(100L, now - deckFrame) / DECK_OUT_MILLIS
+        deckFrame = now
+        if (insertStart >= 0) { deckOut = 0f; return }
+        val goal = if (app.renameActive() || app.carouselMode() && app.carouselKey() == loadedKey()) 1f else 0f
+        deckOut = if (goal > deckOut) min(goal, deckOut + dt) else max(goal, deckOut - dt)
+    }
+
+    private fun deckHatch(): Float = HATCH_DEGREES * when {
+        deckOut <= 0f -> 0f
+        deckOut < DECK_OPENED -> ease(deckOut / DECK_OPENED)
+        deckOut < DECK_LIFTED -> 1f
+        deckOut < DECK_CLOSED -> 1 - ease((deckOut - DECK_LIFTED) / (DECK_CLOSED - DECK_LIFTED))
+        else -> 0f
+    }
+
+    private fun deckWellY(): Float =
+        if (deckOut < DECK_OPENED) SLOT_Y else SLOT_Y + (OUT_Y - SLOT_Y) * ease(min(1f, (deckOut - DECK_OPENED) / (DECK_LIFTED - DECK_OPENED)))
+
+    private fun deckCassette(c: Canvas, x: Float, y: Float, color: Int, name: String?) {
+        if (deckOut <= DECK_LIFTED) return
+        val k = ease((deckOut - DECK_LIFTED) / (1 - DECK_LIFTED))
+        val top = OUT_Y + TOP_SHIFT
+        val cx = UI_CENTER_X + (x - UI_CENTER_X) * k
+        val cy = top + (y - top) * k
+        if (k >= 0.5f) hoverShadow(c, cx, cy)
+        cassette(c, cx, cy, color, name, 0f)
+    }
+
     private fun carousel(c: Canvas, now: Long) {
-        if (!app.carouselMode() || insertStart >= 0) { carouselKey = Int.MIN_VALUE; carouselList = false; return }
-        if (app.mode == Mode.PROJECT_OPEN || app.mode == Mode.PROJECT_EDIT) { carouselShelf(c, now); return }
+        stepDeckOut(now)
+        if (insertStart < 0 && app.renameActive() && !app.noTape) {
+            val bob = sin(now / BOB_MILLIS).toFloat() * BOB_HEIGHT
+            deckCassette(c, UI_CENTER_X, CAROUSEL_Y + bob, app.cassetteColor(app.session), app.textValue.toString())
+            return
+        }
+        if (insertStart < 0 && app.newCassetteActive()) {
+            if (deckOut > 0 && !app.noTape) deckCassette(c, UI_CENTER_X, CAROUSEL_Y, app.cassetteColor(app.session), app.session.name())
+            newCassette(c, now)
+            return
+        }
+        newShown = false
+        if (!app.carouselMode() || insertStart >= 0) {
+            carouselKey = Int.MIN_VALUE; carouselList = false
+            if (deckOut > 0 && insertStart < 0 && !app.noTape) deckCassette(c, UI_CENTER_X, CAROUSEL_Y, app.cassetteColor(app.session), app.session.name())
+            return
+        }
+        if (app.mode == Mode.PROJECT_OPEN) { carouselShelf(c, now); return }
         carouselList = false
         val name = app.carouselName()
         val color = app.carouselColor()
@@ -553,7 +667,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (key != carouselKey) {
             if (carouselKey != Int.MIN_VALUE && carouselShownName != null) { carouselOutName = carouselShownName; carouselOutColor = carouselShownColor }
             else carouselOutName = null
-            carouselDirection = if (carouselKey != Int.MIN_VALUE && key < carouselKey) 1 else -1
+            carouselDirection = if (carouselKey != Int.MIN_VALUE && key > carouselKey) 1 else -1
             carouselKey = key; carouselStart = now
         }
         carouselShownName = name; carouselShownColor = color
@@ -566,15 +680,18 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         }
         val x = UI_CENTER_X + carouselDirection * CAROUSEL_TRAVEL * (1 - ease(t))
         val bob = sin(now / BOB_MILLIS).toFloat() * BOB_HEIGHT
+        if (key == loadedKey()) { deckCassette(c, x, CAROUSEL_Y + bob, color, name); return }
         hoverShadow(c, x, CAROUSEL_Y + bob)
         cassette(c, x, CAROUSEL_Y + bob, color, name, 0f)
     }
 
     private fun carouselShelf(c: Canvas, now: Long) {
         val list = app.browseList()
-        if (list.isEmpty()) return
-        val target = min(app.selection, list.size - 1).toFloat()
-        if (!carouselList) { carouselScroll = if (carouselKey == Int.MIN_VALUE) target - SHELF_ENTRY else target; carouselFrame = now }
+        val size = app.shelfSize()
+        if (size == 0) return
+        val target = min(app.selection, size - 1).toFloat()
+        if (!carouselList) { carouselScroll = target; carouselFrame = now; shelfEnter = now; shelfAll = throwStart >= 0 }
+        val slide = 1 - ease(min(1f, (now - shelfEnter) / SHELF_ENTER_MILLIS))
         carouselList = true
         val dt = min(0.1f, (now - carouselFrame) / 1000f)
         carouselFrame = now
@@ -582,15 +699,62 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (abs(target - carouselScroll) < 0.001f) carouselScroll = target
         val bob = sin(now / BOB_MILLIS).toFloat() * BOB_HEIGHT
         val first = max(0, kotlin.math.floor(carouselScroll).toInt() - 2)
-        val last = min(list.size - 1, kotlin.math.ceil(carouselScroll).toInt() + 2)
+        val last = min(size - 1, kotlin.math.ceil(carouselScroll).toInt() + 2)
+        val offset = app.shelfOffset()
+        val loadedEntry = list.indexOfFirst { it.number == loadedKey() }
+        val loaded = if (loadedEntry < 0) -1 else loadedEntry + offset
         for (i in first..last) {
-            val x = UI_CENTER_X - (i - carouselScroll) * SHELF_SPACING
+            if (i == loaded) continue
+            val x = UI_CENTER_X + (i - carouselScroll) * SHELF_SPACING + (if (i.toFloat() == target) (if (shelfAll) -1f else 0f) else Math.signum(i - target)) * slide * UI_WIDTH
             if (abs(x - UI_CENTER_X) > UI_WIDTH / 2 + CASSETTE_W / 2) continue
             val y = CAROUSEL_Y + if (i == target.toInt()) bob else 0f
             hoverShadow(c, x, y)
-            cassette(c, x, y, app.cassetteColor(list[i]), list[i].name(), 0f)
+            if (i == 0 && offset > 0) notedCassette(c, x, y, MainActivity.CASSETTE_COLORS[0], "", MainActivity.IMPORT_LABEL, 0f)
+            else if (i < offset) notedCassette(c, x, y, MainActivity.CASSETTE_COLORS[NEW_COLOR], "", MainActivity.NEW_LABEL, 0f)
+            else cassette(c, x, y, app.cassetteColor(list[i - offset]), list[i - offset].name(), 0f)
+        }
+        if (loaded >= 0 && deckOut > 0) {
+            val y = CAROUSEL_Y + if (loaded == target.toInt()) bob else 0f
+            deckCassette(c, UI_CENTER_X + (loaded - carouselScroll) * SHELF_SPACING, y, app.cassetteColor(list[loadedEntry]), list[loadedEntry].name())
         }
         carouselKey = app.carouselKey(); carouselShownName = app.carouselName(); carouselShownColor = app.carouselColor()
+    }
+
+    private fun notedCassette(c: Canvas, x: Float, y: Float, color: Int, name: String, label: String, peel: Float) {
+        cassette(c, x, y, color, name, 0f)
+        if (peel >= 1f) return
+        c.save()
+        if (peel > 0f) {
+            val lift = ease(min(1f, peel / 0.3f))
+            val fly = max(0f, (peel - 0.25f) / 0.75f)
+            c.translate(fly * 140 + fly * fly * 560, -lift * 14 - fly * 320 + fly * fly * 60)
+            c.rotate(-lift * 9 + fly * fly * 220, x - 50, y - 50)
+        }
+        c.rotate(-4f, x, y)
+        val l = x - 92; val t = y - 50; val r = x + 92; val b = y + 50
+        rect(c, l + 3, t + 5, r + 3, b + 5, 2f, 0x40000000)
+        rect(c, l, t, r, b, 2f, 0xfffbf7ea.toInt())
+        var ry = t + 22
+        while (ry < b - 4) { line(c, l, ry, r, ry, 0x6094a8c8, 1f); ry += 18 }
+        line(c, l + 26, t, l + 26, b, 0xb0e0605a.toInt(), 1.2f)
+        c.save(); c.rotate(3f, x, t)
+        rect(c, x - 50, t - 18, x + 50, t + 20, 1f, 0x88ece8d6.toInt())
+        line(c, x - 50, t - 18, x + 50, t - 18, 0x30ffffff, 1f)
+        c.restore()
+        paint.typeface = marker(); paint.textSize = 21f; paint.color = 0xff1f2a5c.toInt()
+        c.drawText(label, x + 13 - paint.measureText(label) / 2, t + 56, paint)
+        c.restore()
+    }
+
+    private fun newCassette(c: Canvas, now: Long) {
+        if (!newShown) { newShown = true; newPeelStart = now }
+        val typing = app.mode == Mode.TEXT
+        val name = if (typing) app.textValue.toString() else app.pendingName
+        val color = MainActivity.CASSETTE_COLORS[if (typing) NEW_COLOR else min(app.selection, MainActivity.CASSETTE_COLORS.size - 1)]
+        val y = CAROUSEL_Y + sin(now / BOB_MILLIS).toFloat() * BOB_HEIGHT
+        hoverShadow(c, UI_CENTER_X, y)
+        notedCassette(c, UI_CENTER_X, y, color, name, MainActivity.NEW_LABEL, (now - newPeelStart) / PEEL_NOTE_MILLIS)
+        carouselKey = MainActivity.NEW_KEY; carouselShownName = name; carouselShownColor = color
     }
 
     private fun risingCassette(c: Canvas, t: Long) {
@@ -1224,11 +1388,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 }
             }
             Mode.PROJECTS -> {
-                menu(c, MainActivity.PROJECT_ITEMS)
+                menu(c, app.projectItems())
                 if (app.noTape) text(c, "NO TAPE IN THE DECK", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, ORANGE, monoBold)
             }
-            Mode.PROJECT_OPEN, Mode.PROJECT_EDIT -> tapeBrowser(c, app.mode == Mode.PROJECT_OPEN)
-            Mode.PROJECT_EDIT_MENU -> menu(c, MainActivity.PROJECT_EDIT_ITEMS)
+            Mode.PROJECT_OPEN -> tapeBrowser(c)
             Mode.PROJECT_COLOR -> colorPicker(c)
             Mode.PROJECT_DELETE -> {
                 text(c, "DELETE TAPE?", LCD_LEFT, 99f, 17f, ORANGE, monoBold)
@@ -1311,6 +1474,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (hint.isNotEmpty()) text(c, hint, LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
     }
 
+
     private fun textScreen(c: Canvas) {
         val fresh = app.textFresh()
         val shown = app.textValue.toString() + if (fresh) "" else "_"
@@ -1323,6 +1487,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             text(c, line, LCD_LEFT, y, TEXT_SIZE, if (fresh) LCD_DARK else LCD, mono)
         }
         text(c, "SELECT: DONE  RETURN: CANCEL", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
+        if (app.textCounted) rightText(c, "${app.textValue.length}/${app.textLimit()}", LCD_RIGHT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
     }
 
     private fun colorPicker(c: Canvas) {
@@ -1346,16 +1511,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         text(c, "TURN: PICK  SELECT: " + (if (app.colorForNew) "LOAD NEW TAPE" else "SAVE"), LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
     }
 
-    private fun tapeBrowser(c: Canvas, open: Boolean) {
-        val list = app.browseList()
-        if (list.isEmpty()) return
-        val index = min(app.selection, list.size - 1)
-        val loaded = list[index].id == app.session.id
-        text(c, if (open) "OPEN TAPE" else "EDIT TAPE", LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, mono)
-        rightText(c, String.format(Locale.US, "%d / %d", index + 1, list.size), LCD_RIGHT, LCD_TITLE_Y, LCD_TEXT, LCD, mono)
+    private fun tapeBrowser(c: Canvas) {
+        val size = app.shelfSize()
+        if (size == 0) return
+        val index = min(app.selection, size - 1)
+        text(c, "OPEN TAPE", LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, mono)
+        rightText(c, String.format(Locale.US, "%d / %d", index + 1, size), LCD_RIGHT, LCD_TITLE_Y, LCD_TEXT, LCD, mono)
         text(c, app.carouselName().uppercase(Locale.US), LCD_LEFT, 140f, 20f, LCD, monoBold)
-        if (loaded) text(c, "IN THE DECK", LCD_LEFT, 164f, LCD_TEXT, ORANGE, monoBold)
-        text(c, if (open) "TURN: BROWSE  SELECT: LOAD" else "TURN: BROWSE  SELECT: EDIT", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
+        val action = if (app.importSelected()) "IMPORT" else if (app.newSelected()) "NEW" else "LOAD"
+        text(c, "TURN: BROWSE  SELECT: $action", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
     }
 
     private fun home(c: Canvas) {
@@ -2217,14 +2381,14 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.save()
         c.translate(playX + (if (left) -CORNER_FACE_X else CORNER_FACE_X), PLAY_Y + CORNER_FACE_Y + (if (pressedPlay) PRESS_DEPTH else 0f))
         c.rotate(if (left) -45f else 45f)
-        paint.color = INK
-        if (active) {
-            rect(c, -9.5f, -12f, -2.5f, 12f, 1f, INK)
-            rect(c, 2.5f, -12f, 9.5f, 12f, 1f, INK)
-        } else c.drawPath(playIcon, paint)
+        centeredText(c, if (active) "PAUSE" else "PLAY", 0f, 0f, CORNER_LABEL_TEXT, INK, monoBold)
         c.restore()
         if (app.hasTimelineZoom()) buttonGlow(c, zoomX, ZOOM_Y + (if (pressedZoom) PRESS_DEPTH else 0f), if (left) buttonShape else zoomButtonShape, zoomLight)
-        zoomIcon(c, zoomX + (if (left) CORNER_FACE_X else -CORNER_FACE_X), ZOOM_Y + CORNER_FACE_Y + (if (pressedZoom) PRESS_DEPTH else 0f))
+        c.save()
+        c.translate(zoomX + (if (left) CORNER_FACE_X else -CORNER_FACE_X), ZOOM_Y + CORNER_FACE_Y + (if (pressedZoom) PRESS_DEPTH else 0f))
+        c.rotate(if (left) 45f else -45f)
+        centeredText(c, "ZOOM", 0f, 0f, CORNER_LABEL_TEXT, INK, monoBold)
+        c.restore()
     }
 
     private fun deviceRecording(c: Canvas) {
@@ -2321,15 +2485,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         paint.shader = light
         c.drawCircle(0f, CORNER_FACE_Y, GLOW_RADIUS, paint)
         paint.shader = null
-        c.restore()
-    }
-
-    private fun zoomIcon(c: Canvas, x: Float, y: Float) {
-        c.save(); c.scale(1.35f, 1.35f, x, y)
-        paint.style = Paint.Style.STROKE; paint.strokeWidth = 2.2f; paint.color = INK
-        c.drawCircle(x - 2, y - 2, 6f, paint)
-        line(c, x + 2, y + 2, x + 8, y + 8, INK, 2.2f)
-        paint.style = Paint.Style.FILL
         c.restore()
     }
 
@@ -2500,7 +2655,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     override fun performClick(): Boolean { super.performClick(); return true }
 
-    private fun cassetteSlowdown() = if (app.mode == Mode.PROJECT_OPEN || app.mode == Mode.PROJECT_EDIT || app.mode == Mode.PROJECT_COLOR) CASSETTE_WHEEL else 1f
+    private fun cassetteSlowdown() = if (app.mode == Mode.PROJECT_OPEN || app.mode == Mode.PROJECT_COLOR) CASSETTE_WHEEL else 1f
 
     override fun onCheckIsTextEditor() = app.mode == Mode.TEXT
 
@@ -2721,7 +2876,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val STACK_ROWS = 4
         private const val SHELF_SPACING = 330f
         private const val SHELF_SPEED = 12f
-        private const val SHELF_ENTRY = 1.3f
         private const val FLATTEN_MILLIS = 200L
         private const val REVEAL_MILLIS = 150L
         private const val CASSETTE_WHEEL = 0.7f
@@ -2767,7 +2921,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val CAROUSEL_TRAVEL = 420f
         private const val BOB_MILLIS = 520.0
         private const val BOB_HEIGHT = 2.5f
-        private const val SLOT_Y = 140f
+        private const val SLOT_Y = 14f + CASSETTE_H / 2
         private const val OUT_Y = -150f
         private const val RISE_END = 450L
         private const val OPEN_END = 700L
@@ -2803,6 +2957,18 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val WHEEL_LABEL_OFFSET = 104
         private const val WHEEL_TICKS = 60
         private const val WHEEL_LABEL_TEXT = 15f
+        private const val CORNER_LABEL_TEXT = 15f
+        private const val DECK_OUT_MILLIS = 1100f
+        private const val PEEL_NOTE_MILLIS = 900f
+        private const val THROW_MILLIS = 750f
+        private const val SHELF_ENTER_MILLIS = 450f
+        private const val LABEL_TEXT = 17f
+        private const val SQUEEZED = "#Z@"
+        private const val LABEL_HALF = 74f
+        private const val NEW_COLOR = 1
+        private const val DECK_OPENED = 0.22f
+        private const val DECK_LIFTED = 0.5f
+        private const val DECK_CLOSED = 0.75f
         private const val PAD_COLUMNS = 4
         private const val PAD_ROWS = Sequencer.STEPS / PAD_COLUMNS
         private const val PRESS_DEPTH = 2f
@@ -2950,10 +3116,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             shape.close()
             if (mirrored) shape.transform(Matrix().apply { setScale(-1f, 1f) })
             return shape
-        }
-
-        private fun playIcon() = Path().apply {
-            moveTo(-7f, -12f); lineTo(-7f, 12f); lineTo(14f, 0f); close()
         }
 
         private fun trackButtonShape() = Path().apply {
