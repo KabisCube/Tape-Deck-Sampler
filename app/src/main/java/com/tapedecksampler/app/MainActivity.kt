@@ -617,7 +617,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         try {
             if (fresh) {
                 if (!loaded.preferences.edit().clear().commit()) throw IOException("Cannot reset new project")
-                StarterKit.seed(loaded.tape, loaded.sequencer, kit)
+                StarterKit.seed(loaded.tape, loaded.sequencer, kit, assets)
                 if (!loaded.preferences.edit().putString("tracks", trackData(loaded.sequencer).toString()).putInt("bpm", StarterKit.BPM[kit]).commit()) throw IOException("Cannot save new project")
             }
             loaded.track = load(loaded.sequencer, loaded.preferences)
@@ -764,6 +764,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.effectPowerSet = groupMask(json, "effectPowerSet") and EFFECT_MASK
         controls.trimStart = json.optInt("trimStart", 0).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
         controls.trimEnd = json.optInt("trimEnd", 0).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
+        controls.choirCopies = json.optInt("choirCopies", ChoirEffect.DEFAULT_COPIES).coerceIn(ChoirEffect.MIN_COPIES, ChoirEffect.MAX_COPIES)
+        controls.choirDetune = json.optInt("choirDetune", ChoirEffect.DEFAULT_DETUNE).coerceIn(0, ChoirEffect.MAX_DETUNE)
+        controls.choirOffset = json.optInt("choirOffset", ChoirEffect.DEFAULT_OFFSET_MS).coerceIn(0, ChoirEffect.MAX_OFFSET_MS)
         val chain = json.optJSONArray("chain")
         if (chain == null || chain.length() < Sequencer.Effects.SPLIT_CHAIN_LENGTH) controls.splitGroups()
         if (chain != null) controls.restoreOrder(IntArray(chain.length()) { chain.optInt(it) })
@@ -795,7 +798,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
             .put("robotVersion", RobotEffect.PROFILE_VERSION).put("robotProfile", controls.robotProfile)
             .put("robotMorph", controls.robotMorph).put("robotMix", controls.robotMix)
             .put("effectPower", controls.effectPower).put("effectPowerSet", controls.effectPowerSet)
-            .put("trimStart", controls.trimStart).put("trimEnd", controls.trimEnd).put("custom", controls.custom).put("fxVersion", FX_VERSION)
+            .put("trimStart", controls.trimStart).put("trimEnd", controls.trimEnd)
+            .put("choirCopies", controls.choirCopies).put("choirDetune", controls.choirDetune).put("choirOffset", controls.choirOffset).put("custom", controls.custom).put("fxVersion", FX_VERSION)
     }
 
     private fun effectOrNull(controls: Sequencer.Effects?): Any = if (controls == null) JSONObject.NULL else effectData(controls)
@@ -1286,6 +1290,16 @@ class MainActivity : Activity(), AudioEngine.Listener {
             return
         }
         if (mode == Mode.FX_REORDER && effectHeld >= 0) { wheel(delta); instrument.invalidate(); return }
+        if (shifting()) {
+            val parameter = if (delta < 0) FX_TRIM_START else FX_TRIM_END
+            if (parameter != effectParameter) {
+                effectParameter = parameter
+                effectReturnSelection = FX_GROUP_PARAMETERS[effectGroup].indexOf(parameter)
+                effectValue = effectSetting(parameter)
+            }
+            haptic(); instrument.invalidate()
+            return
+        }
         if (mode == Mode.HOME) openSlice()
         if (mode == Mode.START || mode == Mode.END) {
             mode = if (delta < 0) Mode.START else Mode.END
@@ -1305,7 +1319,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun effectStackPage() = mode == Mode.EFFECTS && effectGroup < 0
     fun canUndoEffect() = deletedEffects.isNotEmpty()
-    fun effectSideKeys() = effectStackPage() || mode == Mode.FX_REORDER && effectHeld >= 0
+    fun effectSideKeys() = effectStackPage() || mode == Mode.FX_REORDER && effectHeld >= 0 || shifting()
 
     fun effectStack(): IntArray {
         val stack = effectControls().stack()
@@ -1330,8 +1344,6 @@ class MainActivity : Activity(), AudioEngine.Listener {
         val items = addGroups().map { FX_NAMES[it] }.toMutableList()
         if (stepTarget >= 0) {
             items.add(if (effectControls().mute) "Unmute" else "Mute")
-            items.add("Preview sample")
-            items.add("Reset pad effects")
         }
         return items.toTypedArray()
     }
@@ -1366,6 +1378,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         mode = Mode.EFFECTS; effectGroup = group; selection = 0
         if (transform) scheduleLive()
         save()
+        if (FX_GROUP_PARAMETERS[group].isEmpty()) { addSnapshot = null; effectGroup = -1; selection = stackRow(group) }
         if (FX_GROUP_PARAMETERS[group].size == 1) { effectDirect = true; openEffect() }
     }
 
@@ -1439,7 +1452,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             1 -> "Paste " + FX_NAMES[effectClipboardGroups[0]]
             else -> "Paste stack / " + effectClipboardGroups.size + " effects"
         }
-        return arrayOf(copy, "Copy stack", paste, "Order")
+        return arrayOf(copy, "Copy stack", paste, "Order", if (stepTarget >= 0) "Reset pad effects" else "Reset track effects")
     }
 
     fun optionEnabled(index: Int): Boolean {
@@ -1447,6 +1460,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         return when (index) {
             OPTION_COPY -> optionsRow < count
             OPTION_PASTE -> effectClipboardGroups.any { stepTarget < 0 || !trackOnly(it) }
+            OPTION_RESET -> true
             else -> count > 0
         }
     }
@@ -1462,6 +1476,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 mode = Mode.EFFECTS; selection = optionsRow
             }
             OPTION_PASTE -> pasteEffects()
+            OPTION_RESET -> resetEffects()
             else -> { mode = Mode.FX_REORDER; effectHeld = -1; selection = min(optionsRow, stack.size - 1) }
         }
     }
@@ -1508,6 +1523,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
         parameter == FX_EVERY -> ordinal(value)
         parameter == FX_WOBBLE_MODE -> WOBBLE_MODES[value]
         parameter == FX_WOBBLE_RATE -> String.format(Locale.US, "%.1f Hz", value / WOBBLE_RATE_PER_HZ)
+        parameter == FX_CHOIR_COPIES -> if (value == 1) "1 copy" else "$value copies"
+        parameter == FX_CHOIR_DETUNE -> "$value ct"
+        parameter == FX_CHOIR_OFFSET -> "$value ms"
         else -> "$value%"
     }
 
@@ -1538,6 +1556,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
         FX_WOBBLE_MODE -> "VOLUME / PITCH / SPEED"
         FX_WOBBLE_RATE -> "${MIN_WOBBLE_RATE / WOBBLE_RATE_PER_HZ}-${(MAX_WOBBLE_RATE / WOBBLE_RATE_PER_HZ).toInt()} Hz / LIVE"
         FX_WOBBLE_DEPTH -> "0-100% / LIVE"
+        FX_CHOIR_COPIES -> "${ChoirEffect.MIN_COPIES}-${ChoirEffect.MAX_COPIES} EXTRA VOICES"
+        FX_CHOIR_DETUNE -> "0-${ChoirEffect.MAX_DETUNE} CENTS / SPREAD UP AND DOWN"
+        FX_CHOIR_OFFSET -> "0-${ChoirEffect.MAX_OFFSET_MS} ms / DELAY BETWEEN COPIES"
         else -> "LIVE / SELECT TO SAVE"
     }
 
@@ -1583,6 +1604,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
             FX_WOBBLE_DEPTH -> controls.wobbleDepth
             FX_TRIM_START -> controls.trimStart
             FX_TRIM_END -> controls.trimEnd
+            FX_CHOIR_COPIES -> controls.choirCopies
+            FX_CHOIR_DETUNE -> controls.choirDetune
+            FX_CHOIR_OFFSET -> controls.choirOffset
             else -> throw IllegalArgumentException("Unknown effect")
         }
     }
@@ -1598,7 +1622,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     private fun inheritTrack() { if (stepTarget < 0) sequencer.inheritTrack(track) }
 
-    private fun rendersSample(parameter: Int) = parameter == FX_SPEED || parameter == FX_PITCH || parameter in FX_AUTO_KEY..FX_AUTO_MIX || parameter in FX_ROBOT_PROFILE..FX_ROBOT_MIX || parameter == FX_TRIM_START || parameter == FX_TRIM_END
+    private fun rendersSample(parameter: Int) = parameter == FX_SPEED || parameter == FX_PITCH || parameter in FX_AUTO_KEY..FX_AUTO_MIX || parameter in FX_ROBOT_PROFILE..FX_ROBOT_MIX || parameter == FX_TRIM_START || parameter == FX_TRIM_END || parameter in FX_CHOIR_COPIES..FX_CHOIR_OFFSET
 
     private fun liveEffect(parameter: Int, value: Int) {
         synchronized(sequencer) {
@@ -1643,6 +1667,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_WOBBLE_DEPTH -> controls.wobbleDepth = value
                 FX_TRIM_START -> controls.trimStart = value
                 FX_TRIM_END -> controls.trimEnd = value
+                FX_CHOIR_COPIES -> controls.choirCopies = value
+                FX_CHOIR_DETUNE -> controls.choirDetune = value
+                FX_CHOIR_OFFSET -> controls.choirOffset = value
             }
             if (parameter == FX_TRIM_START || parameter == FX_TRIM_END) {
                 val slice = sequencer.tracks[track]
@@ -1703,17 +1730,26 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private fun openAddedEffect() {
         val groups = addGroups()
         if (selection < groups.size) { addEffect(groups[selection]); return }
-        val row = selection - groups.size
-        val pad = stepTarget >= 0
-        if (pad && row == 0) {
+        if (stepTarget >= 0 && selection == groups.size) {
             synchronized(sequencer) { val controls = editableEffects(); controls.mute = !controls.mute }
-            save(); return
+            save()
         }
-        if (pad && row == 1) { if (acquireFocus()) sequencer.previewStep(track, stepTarget); return }
+    }
+
+    private fun resetEffects() {
         cancelLive()
-        sequencer.resetStep(track, stepTarget)
+        if (stepTarget >= 0) sequencer.resetStep(track, stepTarget)
+        else synchronized(sequencer) {
+            val controls = sequencer.tracks[track]
+            for (group in 0 until Sequencer.Effects.GROUPS) controls.resetGroup(group)
+            controls.chain = Sequencer.Effects().chain
+            inheritTrack()
+            sequencer.refresh(track)
+        }
         deletedEffects.clear()
+        message = if (stepTarget >= 0) String.format(Locale.US, "PAD %02d EFFECTS RESET", stepTarget + 1) else "TRACK " + (track + 1) + " EFFECTS RESET"
         mode = Mode.EFFECTS; selection = 0
+        scheduleLive()
         save()
     }
 
@@ -1724,6 +1760,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 if (addItems().isNotEmpty()) { mode = Mode.FX_ADD; selection = 0 }
                 return
             }
+            if (FX_GROUP_PARAMETERS[stack[selection]].isEmpty()) return
             effectGroup = stack[selection]; selection = 0
             if (FX_GROUP_PARAMETERS[effectGroup].size == 1) { effectDirect = true; openEffect() }
             return
@@ -1932,6 +1969,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
                     FX_AUTO_RETUNE -> (v + delta * FAST_STEP).coerceIn(0, MAX_RETUNE_MS)
                     FX_SWING -> (v + delta).coerceIn(Sequencer.MIN_SWING, Sequencer.MAX_SWING)
                     FX_NUDGE -> (v + delta).coerceIn(-MAX_NUDGE_MS, MAX_NUDGE_MS)
+                    FX_CHOIR_COPIES -> (v + delta).coerceIn(ChoirEffect.MIN_COPIES, ChoirEffect.MAX_COPIES)
+                    FX_CHOIR_DETUNE -> (v + delta * FAST_STEP).coerceIn(0, ChoirEffect.MAX_DETUNE)
+                    FX_CHOIR_OFFSET -> (v + delta * FAST_STEP).coerceIn(0, ChoirEffect.MAX_OFFSET_MS)
                     else -> (v + delta).coerceIn(0, 100)
                 }
                 liveEffect(effectParameter, effectValue)
@@ -3054,6 +3094,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val FX_HIGH_RESONANCE = 38
         const val FX_LOW_RESONANCE = 39
         const val FX_BAND_RESONANCE = 40
+        const val FX_CHOIR_COPIES = 41
+        const val FX_CHOIR_DETUNE = 42
+        const val FX_CHOIR_OFFSET = 43
         private const val LEGACY_ROBOT_SCALE = 5
         @JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Sync", "Project", "System", "Check the back")
         @JvmField val EXPORT_ITEMS = arrayOf("As MIDI", "As WAV", "As Project")
@@ -3068,6 +3111,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val OPTION_COPY_STACK = 1
         const val OPTION_PASTE = 2
         const val OPTION_ORDER = 3
+        const val OPTION_RESET = 4
         @JvmField val CASSETTE_NAMES = arrayOf(
             "Clear", "Smoke",
             "Blush", "Peach", "Butter", "Pistachio", "Seafoam", "Powder", "Lavender", "Rose",
@@ -3083,14 +3127,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
         private val RETIRED_CASSETTE_NAMES = arrayOf("Ruby" to "Laser", "Coral" to "Peach", "Tangerine" to "Blaze", "Lemon" to "Volt", "Lime" to "Toxic",
             "Mint" to "Seafoam", "Teal" to "Cyber", "Sky" to "Powder", "Ocean" to "Powder", "Grape" to "Lavender")
         private val OLD_CASSETTE_NAMES = arrayOf("Smoke", "Ruby", "Tangerine", "Lemon", "Mint", "Ocean", "Grape", "Bubblegum", "Clear", "Lime", "Teal", "Sky", "Coral", "Cocoa")
-        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE")
+        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE", "CHOIR COPIES", "CHOIR DETUNE", "CHOIR OFFSET")
         @JvmField val WOBBLE_MODES = arrayOf("Volume", "Pitch", "Speed")
-        @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass")
-        @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null)
+        @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass", "Reverse", "Choir")
+        @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY")
         const val ALONE_REASON = "ADD FILTER, DELAY, DIST OR REVERB"
-        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
-        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE))
-        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"))
+        @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.CHOIR, Sequencer.Effects.REVERSE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
+        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE), intArrayOf(), intArrayOf(FX_CHOIR_COPIES, FX_CHOIR_DETUNE, FX_CHOIR_OFFSET))
+        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"), arrayOf(), arrayOf("Copies", "Detune", "Offset"))
         const val SECRET_TRANS = 0
         const val SECRET_PRIDE = 1
         const val SECRET_SWEDEN = 2
@@ -3122,7 +3166,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
         private fun trackOnly(group: Int) = group == Sequencer.Effects.SWING || group == Sequencer.Effects.NUDGE
 
-        private fun transforms(group: Int) = group == Sequencer.Effects.SHIFT || group == Sequencer.Effects.SAMPLE || group == Sequencer.Effects.PITCH || group == Sequencer.Effects.AUTOTUNE || group == Sequencer.Effects.ROBOT
+        private fun transforms(group: Int) = group == Sequencer.Effects.SHIFT || group == Sequencer.Effects.SAMPLE || group == Sequencer.Effects.PITCH || group == Sequencer.Effects.AUTOTUNE || group == Sequencer.Effects.ROBOT || group == Sequencer.Effects.REVERSE || group == Sequencer.Effects.CHOIR
 
         @JvmStatic fun ordinal(value: Int): String {
             val tens = value % 100

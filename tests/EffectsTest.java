@@ -10,6 +10,17 @@ public final class EffectsTest {
 
     public static void main(String[] args) throws Exception {
         short[] tone = tone(440, Tape.RATE * 2);
+        Sequencer.Effects choir = new Sequencer.Effects();
+        check(ChoirEffect.process(tone, choir) == tone && ChoirEffect.reverse(tone, choir) == tone, "Choir and Reverse off are exact");
+        choir.power(Sequencer.Effects.REVERSE, true);
+        short[] reversed = ChoirEffect.reverse(tone, choir);
+        check(reversed.length == tone.length && reversed[0] == tone[tone.length - 1] && reversed[tone.length - 1] == tone[0], "Reverse flips the sample");
+        choir.power(Sequencer.Effects.CHOIR, true);
+        choir.choirCopies = 4; choir.choirDetune = 1200; choir.choirOffset = 50;
+        short[] sung = ChoirEffect.process(tone, choir);
+        check(sung.length == tone.length + ChoirEffect.copyDelay(3, 50), "Choir extends by the last copy offset");
+        check(ChoirEffect.copyCents(0, 4, 1200) == 600 && ChoirEffect.copyCents(1, 4, 1200) == -600 && ChoirEffect.copyCents(3, 4, 1200) == -1200, "Choir spreads copies up and down");
+        check(Math.abs(frequency(SampleProcessor.shift(tone, 1200)) - 880) < 10, "Choir copy shifts pitch, not length");
         check(SampleProcessor.process(tone, 100, 0) == tone, "Neutral transform is exact");
         for (int speed : new int[]{25, 50, 75, 150, 200, 400}) {
             short[] result = SampleProcessor.process(tone, speed, 0);

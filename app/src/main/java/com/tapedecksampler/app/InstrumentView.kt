@@ -81,6 +81,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private var downY = 0f
     private var held = false
     private var drawingScreen = false
+    private var spoolShown = -1f
     private var auditText = false
     private val textBoxes = ArrayList<TextBox>()
     private val hatchMatrix = Matrix()
@@ -160,7 +161,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val issues = ArrayList<String>()
         for (i in textBoxes.indices) {
             val box = textBoxes[i]
-            val limit = if (box.screen) RectF(SCREEN_LEFT, SCREEN_TOP, SCREEN_RIGHT, SCREEN_BOTTOM) else RectF(0f, 0f, UI_WIDTH, UI_HEIGHT)
+            val limit = if (box.screen) RectF(SCREEN_LEFT, SCREEN_TOP + CONTENT_LIFT, SCREEN_RIGHT, SCREEN_BOTTOM - SCREEN_DROP + CONTENT_LIFT) else RectF(0f, 0f, UI_WIDTH, UI_HEIGHT)
             if (!limit.contains(box.bounds)) issues.add("Clipped: " + box.text + " " + box.bounds)
             for (j in 0 until i) if (RectF.intersects(box.bounds, textBoxes[j].bounds)) issues.add("Overlap: " + box.text + " / " + textBoxes[j].text)
         }
@@ -399,17 +400,17 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun topWindow(c: Canvas) {
-        val left = 27f; val right = 373f; val top = 10f; val bottom = 27f
+        val left = 27f; val right = 373f; val top = 10f; val bottom = 27f + SCREEN_DROP
         val t = if (insertStart < 0) -1L else SystemClock.uptimeMillis() - insertStart
         val seated = t < 0 || t < OPEN_END || t >= LOAD_END
         val color = if (t < 0) app.cassetteColor(app.session) else if (t >= EJECT_END) insertColor else ejectColor
-        rect(c, ROW_LEFT, 5f, ROW_RIGHT, 32f, 7f, if (app.darkTheme) 0xff74766a.toInt() else 0xffb2b1a5.toInt())
-        rect(c, 20f, 7f, 380f, 30f, 5f, INK)
+        rect(c, ROW_LEFT, 5f, ROW_RIGHT, 32f + SCREEN_DROP, 7f, if (app.darkTheme) 0xff74766a.toInt() else 0xffb2b1a5.toInt())
+        rect(c, 20f, 7f, 380f, 30f + SCREEN_DROP, 5f, INK)
         rect(c, left, top, right, bottom, 2f, 0xff1b1c19.toInt())
         c.save(); c.clipRect(left, top, right, bottom)
         if (seated) {
             val name = if (t < 0) (if (app.noTape) null else app.session.name()) else if (t >= EJECT_END) insertName else ejectName
-            if (name != null) cassette(c, UI_CENTER_X, top + 4 + CASSETTE_H / 2, color, name, 0f)
+            if (name != null) cassette(c, UI_CENTER_X, top + 4 + CASSETTE_H / 2, color, name, spoolProgress())
             rect(c, left, top, right, bottom, 0f, 0x30000000)
         }
         paint.shader = LinearGradient(0f, top, 0f, bottom, 0x30ffffff, 0x08ffffff, Shader.TileMode.CLAMP)
@@ -503,8 +504,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         }
         val labelLeft = cx - 74
         val labelRight = cx + 74
-        val labelTop = top + 16
-        val labelBottom = top + 40
+        val labelTop = top + 116
+        val labelBottom = top + 140
         rect(c, labelLeft, labelTop, labelRight, labelBottom, 2f, 0xfff4f0e4.toInt())
         rect(c, labelLeft, labelBottom - 3, labelRight, labelBottom, 0f, rgb or 0xff000000.toInt())
         paint.typeface = marker(); paint.textSize = 17f
@@ -608,6 +609,14 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         else -> app.cursor / Tape.LENGTH.toFloat()
     }
 
+    private fun spoolProgress(): Float {
+        if (app.noTape) return max(0f, spoolShown)
+        val target = if (showsTapeIcon() || spoolShown < 0) max(0f, min(1f, tapeFraction())) else spoolShown
+        spoolShown = if (spoolShown < 0 || abs(target - spoolShown) < 0.002f) target else spoolShown + (target - spoolShown) * 0.3f
+        if (spoolShown != target) postInvalidateOnAnimation()
+        return spoolShown
+    }
+
     private fun showsTapeIcon() = !app.busy && (app.mode == Mode.HOME || app.isTimelineMode())
 
     private fun tapeIcon(c: Canvas, right: Float, top: Float, position: Float) {
@@ -631,7 +640,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private fun batteryMeter(c: Canvas) {
         val bay = app.batteries
         val color = if (bay.low()) ORANGE else LCD
-        val left = 339f; val right = 360f; val top = 51f; val bottom = 60f
+        val left = 339f; val right = 360f; val top = 51f + HEADER_DROP; val bottom = 60f + HEADER_DROP
         box(c, left, top, right, bottom, color, 1.2f)
         rect(c, right + 0.6f, top + 2.5f, right + 2.6f, bottom - 2.5f, 0.5f, color)
         val fill = (right - left - 3) * bay.level()
@@ -733,7 +742,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             "Tape: 20 s / 960 000 frames",
             "Tracks: 8 × 16 steps × 16 pages",
             "Tempo: 40–240 BPM",
-            "Sync: Clap & Sync / no network")
+            "Network: Body percussion")
         for (i in specs.indices) text(c, specs[i], x, top + 76 + i * 15, 11f, ink, sans)
         val symbols = top + 196
         binSymbol(c, x + 10, symbols, ink)
@@ -1152,22 +1161,22 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun screen(c: Canvas) {
-        rect(c, ROW_LEFT, 34f, ROW_RIGHT, 235f, 7f, if (app.darkTheme) 0xff74766a.toInt() else 0xffb2b1a5.toInt())
-        rect(c, 20f, 36f, 380f, 231f, 5f, INK)
-        rect(c, 27f, 43f, 373f, 224f, 2f, LCD_DARK)
+        rect(c, ROW_LEFT, 34f + SCREEN_DROP, ROW_RIGHT, 235f, 7f, if (app.darkTheme) 0xff74766a.toInt() else 0xffb2b1a5.toInt())
+        rect(c, 20f, 36f + SCREEN_DROP, 380f, 231f, 5f, INK)
+        rect(c, 27f, 43f + SCREEN_DROP, 373f, 224f, 2f, LCD_DARK)
         if (!app.powered()) return
-        c.save(); c.clipRect(SCREEN_LEFT, SCREEN_TOP, SCREEN_RIGHT, SCREEN_BOTTOM)
+        c.save(); c.translate(0f, SCREEN_DROP - CONTENT_LIFT); c.clipRect(SCREEN_LEFT, SCREEN_TOP + CONTENT_LIFT, SCREEN_RIGHT, SCREEN_BOTTOM - SCREEN_DROP + CONTENT_LIFT)
         drawingScreen = true
-        text(c, String.format(Locale.US, "%03d BPM", app.sequencer.bpm()), LCD_LEFT, 61f, LCD_TEXT, LCD, mono)
+        text(c, String.format(Locale.US, "%03d BPM", app.sequencer.bpm()), LCD_LEFT, 61f + HEADER_DROP, LCD_TEXT, LCD, mono)
         paint.textSize = 10f; paint.typeface = monoBold
         val meter = app.batteries.useBatteries
         val headerWidth = (if (app.sequencer.isPlaying()) 213f else 234f) - (if (meter) 30f else 0f)
         val header = TextUtils.ellipsize(app.syncHeader(), paint, headerWidth, TextUtils.TruncateAt.END).toString()
-        text(c, header, 130f, 61f, 10f, if (app.mode == Mode.RECORDING) ORANGE else LCD, monoBold)
+        text(c, header, 130f, 61f + HEADER_DROP, 10f, if (app.mode == Mode.RECORDING) ORANGE else LCD, monoBold)
         val pageRight = if (meter) 333f else 363f
-        if (app.sequencer.isPlaying() && app.sequencer.playingPage() >= 0) rect(c, pageRight - 10, 50f, pageRight, 60f, 1f, app.sequencer.page(app.sequencer.playingPage()).color)
+        if (app.sequencer.isPlaying() && app.sequencer.playingPage() >= 0) rect(c, pageRight - 10, 50f + HEADER_DROP, pageRight, 60f + HEADER_DROP, 1f, app.sequencer.page(app.sequencer.playingPage()).color)
         if (meter) batteryMeter(c)
-        line(c, 35f, 69f, 365f, 69f, 0xff42503b.toInt(), 1f)
+        line(c, 35f, 69f + HEADER_DROP, 365f, 69f + HEADER_DROP, 0xff42503b.toInt(), 1f)
         if (app.busy && !app.quietWork) {
             text(c, "WORKING", LCD_LEFT, 108f, 22f, LCD, mono)
             wrapped(c, app.message, LCD_LEFT, 138f, 38, 11f, LCD)
@@ -1197,9 +1206,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.BACK -> {}
             Mode.SYNC -> {
                 menu(c, app.syncItems())
-                text(c, app.syncStatus(), LCD_LEFT, 173f, LCD_TITLE_TEXT, LCD, monoBold)
+                text(c, app.syncStatus(), LCD_LEFT, 173f - LOW_ROW, LCD_TITLE_TEXT, LCD, monoBold)
                 if (app.clapClock != null) {
-                    text(c, "KEEP PHONES CLOSE / USE SAME BPM", LCD_LEFT, 193f, LCD_TEXT, LCD, mono)
+                    text(c, "KEEP PHONES CLOSE / USE SAME BPM", LCD_LEFT, 193f - LOW_ROW, LCD_TEXT, LCD, mono)
                     text(c, "BPM CHANGES REJOIN THE NEXT LOOP", LCD_LEFT, LCD_HINT_Y, LCD_SMALL_TEXT, LCD, mono)
                 }
             }
@@ -1210,7 +1219,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     plain(c, "READY,", LCD_LEFT, 100f, 15f, lerpColor(0xffaee08a.toInt(), 0xff5cff72.toInt(), t), mono)
                 }
                 if (app.clapClock == null) {
-                    wrapped(c, "Keep phones close. Use the same BPM. Wait until all phones are ready, then clap once to sync everyone.", LCD_LEFT, 150f, 40, 10f, LCD)
+                    wrapped(c, "Keep phones close. Use the same BPM. Wait until all phones are ready, then clap once to sync everyone.", LCD_LEFT, 138f, 40, 10f, LCD)
                     text(c, "SELECT: CONTINUE / RETRY  RETURN: EXIT", LCD_LEFT, LCD_HINT_Y, LCD_SMALL_TEXT, LCD, mono)
                 }
             }
@@ -1247,7 +1256,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.IMPORT_START, Mode.IMPORT_END -> sourceTimeline(c)
             else -> timeline(c)
         }
-        if (showsTapeIcon()) tapeIcon(c, 364f, 200f, tapeFraction())
+        if (showsTapeIcon()) tapeIcon(c, 364f, 200f - LOW_ROW, tapeFraction())
         drawingScreen = false
         c.restore()
     }
@@ -1319,13 +1328,13 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private fun colorPicker(c: Canvas) {
         text(c, "TAPE COLOR", LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, mono)
         rightText(c, MainActivity.CASSETTE_NAMES[app.selection].uppercase(Locale.US), LCD_RIGHT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, monoBold)
-        val size = 20f
-        val gap = 4f
+        val size = 18f
+        val gap = 3f
         var index = 0
         for (row in MainActivity.CASSETTE_ROWS.indices) {
             val count = MainActivity.CASSETTE_ROWS[row]
             val left = 36f
-            val y = 108 + row * (size + gap)
+            val y = 103 + row * (size + gap)
             for (k in 0 until count) {
                 val x = left + k * (size + gap)
                 if (index == app.selection) rect(c, x - 2.5f, y - 2.5f, x + size + 2.5f, y + size + 2.5f, 3f, LCD)
@@ -1357,7 +1366,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val from = app.homeTimelineStart()
         val grow = settle((SystemClock.uptimeMillis() - revealStart) / REVEAL_MILLIS.toFloat())
         c.save(); c.scale(1f, max(0.001f, grow), 0f, 144f)
-        wave(c, from, from + span, track.start, track.end, 109f, 179f)
+        wave(c, from, from + span, track.start, track.end, 115f, 165f)
         c.restore()
         text(c, MainActivity.seconds(track.start.toLong()) + " → " + MainActivity.seconds(track.end.toLong()) + " s", LCD_LEFT, LCD_HINT_Y, LCD_TITLE_TEXT, LCD, mono)
     }
@@ -1386,7 +1395,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val splitting = splitGroup >= 0
         var closing = max(0f, (split - SPLIT_PAUSE) / (1 - SPLIT_PAUSE))
         closing = 1 - (1 - closing) * (1 - closing)
-        if (splitting) { c.save(); c.clipRect(SCREEN_LEFT, 72f, SCREEN_RIGHT, 200f) }
+        if (splitting) { c.save(); c.clipRect(SCREEN_LEFT, 72f + CONTENT_LIFT, SCREEN_RIGHT, 200f + CONTENT_LIFT) }
         val phase = SystemClock.uptimeMillis() * 2 * Math.PI / PULSE_MILLIS
         for (i in first until min(rows, first + STACK_ROWS)) {
             var y = STACK_TOP + (i - first) * STACK_PITCH
@@ -1406,7 +1415,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (splitting) { splitRow(c, split); c.restore() }
         if (ordering) {
             val movable = app.selection < stack.size && app.canReorder(stack[app.selection])
-            if (app.effectHeld >= 0 || movable) text(c, if (app.effectHeld >= 0) "TURN: MOVE  SELECT: DROP" else "SELECT: PICK UP", LCD_LEFT, 216f, LCD_TEXT, LCD, mono)
+            if (app.effectHeld >= 0 || movable) text(c, if (app.effectHeld >= 0) "TURN: MOVE  SELECT: DROP" else "SELECT: PICK UP", LCD_LEFT, LCD_FOOTER_Y, LCD_TEXT, LCD, mono)
             rightText(c, "RETURN", 345f, LCD_FOOTER_Y, 10f, LCD, mono)
             wheelGlyph(c, 357f, LCD_FOOTER_Y - FOOTER_GLYPH_RISE, -90f, LCD)
             val notice = if (app.selection < stack.size && stack[app.selection] == lockGroup) lockNotice() else null
@@ -1612,6 +1621,19 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 stroke(c, x, y, s, false, -3f, 0f, 3f, 0f)
                 stroke(c, x, y, s, false, 1f, -2f, 3f, 0f, 1f, 2f)
             }
+            Sequencer.Effects.REVERSE -> {
+                stroke(c, x, y, s, false, 7f, -3f, -6f, -3f)
+                stroke(c, x, y, s, false, -3f, -6f, -6f, -3f, -3f, 0f)
+                stroke(c, x, y, s, false, -7f, 3f, 6f, 3f)
+                stroke(c, x, y, s, false, 3f, 0f, 6f, 3f, 3f, 6f)
+            }
+            Sequencer.Effects.CHOIR -> {
+                c.drawCircle(x - 4.5f * s, y - 1f * s, 2.5f * s, paint)
+                c.drawCircle(x + 4.5f * s, y - 1f * s, 2.5f * s, paint)
+                c.drawCircle(x, y - 3f * s, 2.5f * s, paint)
+                stroke(c, x, y, s, false, -8f, 7f, -8f, 4f, -1f, 4f, -1f, 7f)
+                stroke(c, x, y, s, false, 1f, 7f, 1f, 4f, 8f, 4f, 8f, 7f)
+            }
             else -> {
                 stroke(c, x, y, s, true, -7f, -6f, 7f, -6f, 7f, 6f, -7f, 6f)
                 paint.style = Paint.Style.FILL
@@ -1631,7 +1653,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             if (width > room) size *= room / width
         }
         text(c, value, LCD_LEFT, 158f, size, accent, monoBold)
-        text(c, unit, LCD_LEFT, 202f, LCD_TEXT, accent, mono)
+        text(c, unit, LCD_LEFT, 202f - LOW_ROW, LCD_TEXT, accent, mono)
     }
 
     private fun hasVisual(parameter: Int) = parameter !in intArrayOf(MainActivity.FX_SPEED, MainActivity.FX_NUDGE, MainActivity.FX_TRIM_START, MainActivity.FX_TRIM_END, MainActivity.FX_WOBBLE_MODE)
@@ -1807,6 +1829,20 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     line(c, x, b, x, if (i % 2 == 0) t + 6 else t + h * 0.45f, if (i % 2 == 0) faint else accent, 3f)
                 }
             }
+            MainActivity.FX_CHOIR_COPIES, MainActivity.FX_CHOIR_DETUNE, MainActivity.FX_CHOIR_OFFSET -> {
+                val copies = fx.choirCopies
+                val reach = ChoirEffect.copyDelay(copies - 1, ChoirEffect.MAX_OFFSET_MS).toFloat()
+                val middle = (t + b) / 2
+                line(c, l, middle, l + w * 0.5f, middle, faint, 2f)
+                for (copy in 0 until copies) {
+                    val shift = sqrt(ChoirEffect.copyDelay(copy, fx.choirOffset) / reach)
+                    val cents = ChoirEffect.copyCents(copy, copies, fx.choirDetune) / ChoirEffect.MAX_DETUNE
+                    val bend = Math.copySign(Math.pow(abs(cents), 0.35), cents).toFloat()
+                    val y = middle - bend * h / 2
+                    val x = l + w * shift * 0.5f
+                    line(c, x, y, min(r, x + w * 0.5f), y, if (copy % 2 == 0) accent else tint(accent, LCD_DARK, 0.35f), 2f)
+                }
+            }
             MainActivity.FX_VOLUME -> {
                 rect(c, l, b - 10, r, b, 2f, faint)
                 rect(c, l, b - 10, l + w * app.effectValue / 100f, b, 2f, accent)
@@ -1909,15 +1945,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val span = app.timelineSpan().toInt()
         var from = max(0, min(Tape.LENGTH - span, position - span / 2))
         if (app.mode == Mode.START || app.mode == Mode.END) from = TimelineWindow.start(Tape.LENGTH.toLong(), span.toLong(), position.toLong(), a.toLong(), b.toLong()).toInt()
-        wave(c, from, from + span, a, b, 83f, 148f)
+        wave(c, from, from + span, a, b, 88f, 144f)
         if (app.mode == Mode.IMPORT_POSITION) {
-            text(c, MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_LEFT, 187f, 13f, app.importColor, monoBold)
+            text(c, MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_LEFT, 187f - LOW_ROW, 13f, app.importColor, monoBold)
             text(c, "LENGTH " + MainActivity.seconds((b - a).toLong()) + "s / OVERWRITE", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
         } else {
             text(c, MainActivity.seconds(position.toLong()) + " s", LCD_LEFT, LCD_VALUE_Y, 20f, LCD, monoBold)
             text(c, "RANGE " + MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_LEFT, LCD_HINT_Y, LCD_SMALL_TEXT, LCD, mono)
         }
-        rightText(c, (if (app.fine) "FINE " else "STEP ") + app.timelineIncrement() * 1000 / Tape.RATE + " ms", LCD_RIGHT, 187f, LCD_SMALL_TEXT, LCD, mono)
+        rightText(c, (if (app.fine) "FINE " else "STEP ") + app.timelineIncrement() * 1000 / Tape.RATE + " ms", LCD_RIGHT, 187f - LOW_ROW, LCD_SMALL_TEXT, LCD, mono)
     }
 
     private fun shiftTimeline(c: Canvas, accent: Int) {
@@ -1929,24 +1965,24 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val from = window[0]
         val to = window[1]
         text(c, MainActivity.FX_LABELS[app.effectParameter], LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, accent, mono)
-        wave(c, from, to, a, b, 104f, 152f)
+        wave(c, from, to, a, b, 108f, 142f)
         for (edge in intArrayOf(track.start, track.end)) {
             if (edge < from || edge > to) continue
             val x = WAVE_LEFT + WAVE_WIDTH * (edge - from) / (to - from).toFloat()
-            var y = 104f
-            while (y < 152f) { line(c, x, y, x, min(152f, y + 3), tint(accent, LCD_DARK, 0.4f), 1f); y += 6 }
+            var y = 108f
+            while (y < 142f) { line(c, x, y, x, min(142f, y + 3), tint(accent, LCD_DARK, 0.4f), 1f); y += 6 }
         }
         val edge = if (app.effectParameter == MainActivity.FX_TRIM_START) track.start else track.end
         val reach = MainActivity.MAX_SHIFT_MS * (Tape.RATE / 1000)
         for (cap in intArrayOf(edge - reach, edge + reach)) {
             if (cap < from || cap > to) continue
             val x = WAVE_LEFT + WAVE_WIDTH * (cap - from) / (to - from).toFloat()
-            var y = 104f
-            while (y < 152f) { line(c, x, y, x, min(152f, y + 4), SHIFT_LIMIT, 1.4f); y += 7 }
+            var y = 108f
+            while (y < 142f) { line(c, x, y, x, min(142f, y + 4), SHIFT_LIMIT, 1.4f); y += 7 }
         }
-        text(c, app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), LCD_LEFT, 186f, 20f, accent, monoBold)
-        rightText(c, MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_RIGHT, 186f, LCD_SMALL_TEXT, accent, mono)
-        text(c, app.effectHint(app.effectParameter), LCD_LEFT, 205f, LCD_TEXT, accent, mono)
+        text(c, app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), LCD_LEFT, 186f - LOW_ROW, 20f, accent, monoBold)
+        rightText(c, MainActivity.seconds(a.toLong()) + " → " + MainActivity.seconds(b.toLong()) + " s", LCD_RIGHT, 186f - LOW_ROW, LCD_SMALL_TEXT, accent, mono)
+        text(c, app.effectHint(app.effectParameter), LCD_LEFT, 205f - LOW_ROW, LCD_TEXT, accent, mono)
     }
 
     private fun sourceTimeline(c: Canvas) {
@@ -1958,20 +1994,20 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         val from = TimelineWindow.start(source.frames, span, position, app.importStart, app.importEnd)
         val to = from + span
         val sourcePeaks = source.wave.waveform(from, to, WAVE_BINS)
-        val left = WAVE_LEFT; val width = WAVE_WIDTH; val top = 99f; val bottom = 148f; val middle = (top + bottom) / 2
+        val left = WAVE_LEFT; val width = WAVE_WIDTH; val top = 102f; val bottom = 146f; val middle = (top + bottom) / 2
         val a = left + width * (app.importStart - from) / span
         val b = left + width * (app.importEnd - from) / span
         c.save(); c.clipRect(left - 3, top, left + width + 3, bottom)
         rect(c, max(left, a), top, min(left + width, b), bottom, 0f, 0xff29434b.toInt())
         for (i in sourcePeaks.indices) {
             val x = left + width * i / sourcePeaks.size
-            val height = max(0.6f, sourcePeaks[i] * 23)
+            val height = max(0.6f, sourcePeaks[i] * 21)
             line(c, x, middle - height, x, middle + height, 0xff8ad9ec.toInt(), 1.1f)
         }
         selectionEdges(c, a, b, top, bottom, choosingStart)
         c.restore()
-        text(c, axisTime(from, span), left, 159f, 7f, LCD, mono)
-        rightText(c, axisTime(to, span), LCD_RIGHT, 159f, 7f, LCD, mono)
+        text(c, axisTime(from, span), left, 156f, 7f, LCD, mono)
+        rightText(c, axisTime(to, span), LCD_RIGHT, 156f, 7f, LCD, mono)
         text(c, MainActivity.seconds(app.importStart) + " → " + MainActivity.seconds(app.importEnd) + " s", LCD_LEFT, LCD_VALUE_Y, 13f, LCD, monoBold)
         text(c, "LENGTH " + MainActivity.seconds(app.importEnd - app.importStart) + "s", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
         rightText(c, "STEP " + MainActivity.seconds(app.timelineIncrement()) + "s", LCD_RIGHT, LCD_VALUE_Y, LCD_SMALL_TEXT, LCD, mono)
@@ -2090,7 +2126,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 centeredText(c, "UP", WHEEL_X - WHEEL_LABEL_OFFSET, WHEEL_Y, WHEEL_LABEL_TEXT, label, monoBold)
                 centeredText(c, "DOWN", WHEEL_X + WHEEL_LABEL_OFFSET, WHEEL_Y, WHEEL_LABEL_TEXT, label, monoBold)
             }
-            !app.busy && app.mode in arrayOf(Mode.HOME, Mode.START, Mode.END, Mode.IMPORT_START, Mode.IMPORT_END) -> {
+            !app.busy && (app.mode in arrayOf(Mode.HOME, Mode.START, Mode.END, Mode.IMPORT_START, Mode.IMPORT_END) || app.shifting()) -> {
                 sliceIcon(c, WHEEL_X - WHEEL_LABEL_OFFSET, WHEEL_Y, true); sliceIcon(c, WHEEL_X + WHEEL_LABEL_OFFSET, WHEEL_Y, false)
             }
         }
@@ -2195,12 +2231,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (DeviceCaptureService.active()) {
             text(c, "RECORDING DEVICE AUDIO", LCD_LEFT, LCD_TITLE_Y, 13f, ORANGE, monoBold)
             text(c, MainActivity.seconds(DeviceCaptureService.frames().toLong()) + " s", LCD_LEFT, 139f, 25f, LCD, monoBold)
-            text(c, "SWITCH APPS TO RECORD / MAX ${Tape.SECONDS}s", LCD_LEFT, 176f, LCD_TEXT, LCD, mono)
-            text(c, "RECORD OR PLAY: STOP AND TRIM", LCD_LEFT, 207f, LCD_TEXT, LCD, mono)
+            text(c, "SWITCH APPS TO RECORD / MAX ${Tape.SECONDS}s", LCD_LEFT, 176f - LOW_ROW, LCD_TEXT, LCD, mono)
+            text(c, "RECORD OR PLAY: STOP AND TRIM", LCD_LEFT, 207f - LOW_ROW, LCD_TEXT, LCD, mono)
         } else {
             text(c, "RECORD DEVICE", LCD_LEFT, LCD_TITLE_Y, 17f, LCD, monoBold)
             wrapped(c, "Records the audio on your device, including other apps.", LCD_LEFT, 125f, 39, 11f, LCD)
-            text(c, "RECORD: START", LCD_LEFT, 207f, LCD_TEXT, LCD, mono)
+            text(c, "RECORD: START", LCD_LEFT, 207f - LOW_ROW, LCD_TEXT, LCD, mono)
         }
     }
 
@@ -2681,7 +2717,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private val LCD = Color.rgb(190, 211, 148)
         private const val LCD_DARK = 0xff101a16.toInt()
         private const val LCD_DIM = 0xff4d5a45.toInt()
-        private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060, 0xff85e5c4, 0xff70c9c6).map { it.toInt() }.toIntArray()
+        private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060, 0xff85e5c4, 0xff70c9c6, 0xffe0a0e8, 0xfff2d27a).map { it.toInt() }.toIntArray()
         private const val STACK_ROWS = 4
         private const val SHELF_SPACING = 330f
         private const val SHELF_SPEED = 12f
@@ -2710,7 +2746,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val LOCK_NOTICE_MILLIS = 1500L
         private const val STACK_LEFT = 112f
         private const val STACK_WIDTH = 176f
-        private const val STACK_TOP = 77f
+        private const val CONTENT_LIFT = 12f
+        private const val HEADER_DROP = 8f
+        private const val STACK_TOP = 77f + CONTENT_LIFT
         private const val STACK_HEIGHT = 25f
         private const val STACK_PITCH = 28f
         private const val STACK_CELL = 34f
@@ -2755,8 +2793,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val LCD_LEFT = 36f
         private const val LCD_RIGHT = 363f
         private const val LCD_TITLE_Y = 96f
-        private const val LCD_VALUE_Y = 188f
-        private const val LCD_HINT_Y = 213f
+        private const val SCREEN_DROP = 20f
+        private const val LOW_ROW = SCREEN_DROP - CONTENT_LIFT
+        private const val LCD_VALUE_Y = 188f - LOW_ROW
+        private const val LCD_HINT_Y = 213f - LOW_ROW
         private const val LCD_SMALL_TEXT = 9f
         private const val LCD_TEXT = 10f
         private const val LCD_TITLE_TEXT = 12f
@@ -2781,11 +2821,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val LONG_VALUE_CHARS = 7
         private const val LONG_VALUE_TEXT = 31f
         private const val VALUE_TEXT = 46f
-        private const val LCD_FOOTER_Y = 216f
+        private const val LCD_FOOTER_Y = 216f - LOW_ROW
         private const val VISUAL_LEFT = 254f
         private const val VISUAL_RIGHT = 360f
-        private const val VISUAL_TOP = 110f
-        private const val VISUAL_BOTTOM = 166f
+        private const val VISUAL_TOP = 120f
+        private const val VISUAL_BOTTOM = 176f
         private const val VISUAL_POINTS = 64
         private const val VISUAL_CRUSH_HZ = 440f
         private const val VISUAL_CRUSH_CYCLES = 2
@@ -2794,7 +2834,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val VISUAL_AUTOTUNE_MS = 900f
         private const val FOOTER_GLYPH_RISE = 4f
         private const val PULSE_MILLIS = 1800
-        private const val MENU_ROWS = 7
+        private const val MENU_ROWS = 6
         private const val MENU_DISABLED = 0xff70766d.toInt()
         private const val MENU_TOP = 93f
         private const val MENU_PITCH = 20

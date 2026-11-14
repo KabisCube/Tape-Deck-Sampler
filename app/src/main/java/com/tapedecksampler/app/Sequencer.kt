@@ -52,6 +52,9 @@ class Sequencer(private val tape: Tape) {
         @JvmField var wobbleDepth = 0
         @JvmField var trimStart = 0
         @JvmField var trimEnd = 0
+        @JvmField var choirCopies = ChoirEffect.DEFAULT_COPIES
+        @JvmField var choirDetune = ChoirEffect.DEFAULT_DETUNE
+        @JvmField var choirOffset = ChoirEffect.DEFAULT_OFFSET_MS
         @JvmField var effectPower = 0
         @JvmField var effectPowerSet = 0
         @JvmField var custom = 0
@@ -77,6 +80,7 @@ class Sequencer(private val tape: Tape) {
                 EVERY -> every == other.every
                 WOBBLE -> wobbleMode == other.wobbleMode && wobbleRate == other.wobbleRate && wobbleDepth == other.wobbleDepth
                 SHIFT -> trimStart == other.trimStart && trimEnd == other.trimEnd
+                CHOIR -> choirCopies == other.choirCopies && choirDetune == other.choirDetune && choirOffset == other.choirOffset
                 VOLUME -> gain == other.gain
                 PITCH -> pitch == other.pitch
                 else -> true
@@ -225,6 +229,10 @@ class Sequencer(private val tape: Tape) {
 
         fun hasRobot(): Boolean = powered(ROBOT) && robotMix > 0
 
+        fun hasReverse(): Boolean = powered(REVERSE)
+
+        fun hasChoir(): Boolean = powered(CHOIR) && choirCopies > 0
+
         fun hasAutotune(): Boolean = powered(AUTOTUNE) && autoStrength > 0 && autoMix > 0
 
         fun resetGroup(group: Int) {
@@ -245,6 +253,8 @@ class Sequencer(private val tape: Tape) {
                 EVERY -> every = 1
                 WOBBLE -> { wobbleMode = 0; wobbleRate = DEFAULT_WOBBLE_RATE; wobbleDepth = 0 }
                 SHIFT -> { trimStart = 0; trimEnd = 0; prepared = null }
+                REVERSE -> prepared = null
+                CHOIR -> { choirCopies = ChoirEffect.DEFAULT_COPIES; choirDetune = ChoirEffect.DEFAULT_DETUNE; choirOffset = ChoirEffect.DEFAULT_OFFSET_MS; prepared = null }
                 VOLUME -> gain = neutralGain
                 PITCH -> { pitch = 0; prepared = null }
                 else -> throw IllegalArgumentException("Unknown effect group")
@@ -278,6 +288,8 @@ class Sequencer(private val tape: Tape) {
                 EVERY -> every = source.every
                 WOBBLE -> { wobbleMode = source.wobbleMode; wobbleRate = source.wobbleRate; wobbleDepth = source.wobbleDepth }
                 SHIFT -> { trimStart = source.trimStart; trimEnd = source.trimEnd; prepared = null }
+                REVERSE -> prepared = null
+                CHOIR -> { choirCopies = source.choirCopies; choirDetune = source.choirDetune; choirOffset = source.choirOffset; prepared = null }
                 VOLUME -> gain = source.gain
                 PITCH -> { pitch = source.pitch; prepared = null }
                 else -> throw IllegalArgumentException("Unknown effect group")
@@ -306,6 +318,7 @@ class Sequencer(private val tape: Tape) {
             chance = source.chance; every = source.every
             wobbleMode = source.wobbleMode; wobbleRate = source.wobbleRate; wobbleDepth = source.wobbleDepth
             trimStart = source.trimStart; trimEnd = source.trimEnd
+            choirCopies = source.choirCopies; choirDetune = source.choirDetune; choirOffset = source.choirOffset
             custom = source.custom
         }
 
@@ -331,7 +344,9 @@ class Sequencer(private val tape: Tape) {
             const val WOBBLE_SPEED = 2
             const val ROBOT = 16
             const val BAND_PASS = 17
-            const val GROUPS = 18
+            const val REVERSE = 18
+            const val CHOIR = 19
+            const val GROUPS = 20
             private const val LEGACY_CHAIN_LENGTH = 4
             const val SPLIT_CHAIN_LENGTH = 5
             const val CHAIN_LENGTH = 6
@@ -354,7 +369,7 @@ class Sequencer(private val tape: Tape) {
             private const val ON_EVERY = 2
             private const val ON_WOBBLE_DEPTH = 50
             private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, BAND_PASS, DISTORTION, REVERB, DELAY)
-            private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, ROBOT, AUTOTUNE, SWING, NUDGE, WOBBLE, ENVELOPE)
+            private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, ROBOT, AUTOTUNE, CHOIR, REVERSE, SWING, NUDGE, WOBBLE, ENVELOPE)
             private val OUTPUT_STAGE = intArrayOf(VOLUME)
 
             @JvmStatic fun hasPowerSwitch(group: Int): Boolean = group in SAMPLE until GROUPS
@@ -412,6 +427,10 @@ class Sequencer(private val tape: Tape) {
         private val robotMix = controls.robotMix
         private val robotPowered = controls.powered(Effects.ROBOT)
         private val autoPowered = controls.powered(Effects.AUTOTUNE)
+        private val reversed = controls.hasReverse()
+        private val choirCopies = if (controls.hasChoir()) controls.choirCopies else 0
+        private val choirDetune = controls.choirDetune
+        private val choirOffset = controls.choirOffset
 
         internal fun matches(track: Track, controls: Effects, version: Long): Boolean =
             start == sliceStart(track, controls) && end == sliceEnd(track, controls) && speed == controls.speed && pitch == controls.pitch && revision == version
@@ -420,6 +439,8 @@ class Sequencer(private val tape: Tape) {
         internal fun tuningMatches(controls: Effects): Boolean =
             autoKey == controls.autoKey && autoScale == controls.autoScale && autoStrength == controls.autoStrength && autoRetune == controls.autoRetune && autoMix == controls.autoMix && autoPowered == controls.powered(Effects.AUTOTUNE)
                 && robotProfile == controls.robotProfile && robotMorph == controls.robotMorph && robotMix == controls.robotMix && robotPowered == controls.powered(Effects.ROBOT)
+                && reversed == controls.hasReverse() && choirCopies == (if (controls.hasChoir()) controls.choirCopies else 0)
+                && (choirCopies == 0 || choirDetune == controls.choirDetune && choirOffset == controls.choirOffset)
     }
 
     private class Voice(@JvmField val track: Int, @JvmField val step: Int, @JvmField var samples: ShortArray, @JvmField var start: Int, @JvmField var end: Int) {
@@ -759,7 +780,7 @@ class Sequencer(private val tape: Tape) {
         val revision: Long
         synchronized(tape) { source = tape.slice(start, end); revision = tape.revision() }
         val transformed = SampleProcessor.process(source, speed, pitch)
-        return PreparedSample(PitchCorrector.process(RobotEffect.process(transformed, snapshot), snapshot), start, end, speed, pitch, revision, snapshot)
+        return PreparedSample(ChoirEffect.reverse(ChoirEffect.process(PitchCorrector.process(RobotEffect.process(transformed, snapshot), snapshot), snapshot), snapshot), start, end, speed, pitch, revision, snapshot)
     }
 
     @Synchronized fun apply(index: Int, prepared: PreparedSample) = apply(index, -1, prepared)
@@ -1079,7 +1100,7 @@ class Sequencer(private val tape: Tape) {
             return maxOf(sliceStart(track, controls) + MIN_SLICE_FRAMES, minOf(Tape.LENGTH, end))
         }
 
-        private fun hasTransform(controls: Effects): Boolean = controls.speed != 100 || controls.pitch != 0 || controls.hasAutotune() || controls.hasRobot()
+        private fun hasTransform(controls: Effects): Boolean = controls.speed != 100 || controls.pitch != 0 || controls.hasAutotune() || controls.hasRobot() || controls.hasChoir() || controls.hasReverse()
 
         private fun wobbled(v: Voice, controls: Effects): Float {
             val hertz = controls.wobbleRate / WOBBLE_RATE_STEPS_PER_HZ

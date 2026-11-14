@@ -1,5 +1,9 @@
 package com.tapedecksampler.app
 
+import android.content.res.AssetManager
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Locale
 import java.util.Random
 import kotlin.math.PI
 import kotlin.math.abs
@@ -15,7 +19,8 @@ import kotlin.math.tanh
 
 /*
  * Synthesizes the default samples a fresh project gets. Each cassette color family
- * has its own kit; every voice is rendered from oscillators, noise and filters at runtime.
+ * has its own kit; voices are rendered from oscillators, noise and filters at runtime,
+ * except the brown tape, which loads recorded samples from assets.
  */
 object StarterKit {
     const val LOUDNESS = 0.3f
@@ -60,7 +65,7 @@ object StarterKit {
     private val NAMES = arrayOf(
         arrayOf("Kick", "Tom", "Lofi snare", "Closed hat", "Shaker", "Keys", "Rhodes pad", "Soft bass"),
         arrayOf("Kick", "Low tom", "Snare", "Closed hat", "Open hat", "Clap", "Cowbell", "Conga"),
-        arrayOf("Kick", "Tom", "Snare", "Closed hat", "Open hat", "Clap", "Trill", "Tuba"),
+        Array(8) { "Fart " + (it + 1) },
         arrayOf("Kick", "Clap", "Closed hat", "Open hat", "Rimshot", "Acid bass", "Chord stab", "Ride"),
         arrayOf("Break", "Gabber kick", "Amen snare", "Snare roll", "Stutter", "Reese bass", "Rave stab", "Reverse crash"),
         arrayOf("Toy drum", "Rattle", "Plink", "Toy piano", "Toy phone", "Squeaker", "Kitten", "Chick"),
@@ -91,11 +96,12 @@ object StarterKit {
     @JvmStatic
     @JvmOverloads
     @Throws(java.io.IOException::class)
-    fun seed(tape: Tape, sequencer: Sequencer, kit: Int = CHILL) {
+    fun seed(tape: Tape, sequencer: Sequencer, kit: Int = CHILL, assets: AssetManager? = null) {
         sequencer.tempo(BPM[kit])
         var position = 0
         for (voice in 0 until Sequencer.TRACKS) {
-            val sound = balance(sound(kit, voice))
+            val recorded = if (kit == FART && assets != null) recording(assets, String.format(Locale.US, "samples/fart%02d.wav", voice + 1)) else null
+            val sound = balance(recorded ?: sound(kit, voice))
             val data = ShortArray(sound.size) { (sound[it].coerceIn(-1f, 1f) * Short.MAX_VALUE).roundToInt().toShort() }
             tape.write(position, data, data.size)
             sequencer.tracks[voice].start = position
@@ -109,7 +115,6 @@ object StarterKit {
         val seed = 133L + kit * 31L + voice
         return when (kit) {
             ANALOG -> analog(voice, seed)
-            FART -> fart(voice, seed)
             HOUSE -> house(voice, seed)
             BREAKCORE -> breakcore(voice, seed)
             TOYS -> toys(voice, seed)
@@ -121,6 +126,21 @@ object StarterKit {
             TOXIC -> if (voice == 0) twoStep(seed) else breakcore(voice, seed)
             else -> chill(voice, seed)
         }
+    }
+
+    private fun recording(assets: AssetManager, path: String): FloatArray {
+        val bytes = assets.open(path).use { it.readBytes() }
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        var offset = 12
+        while (offset + 8 <= bytes.size) {
+            val size = buffer.getInt(offset + 4)
+            if (bytes[offset].toInt().toChar() == 'd' && bytes[offset + 1].toInt().toChar() == 'a') {
+                val frames = min(size, bytes.size - offset - 8) / 2
+                return FloatArray(frames) { buffer.getShort(offset + 8 + it * 2) / Short.MAX_VALUE.toFloat() }
+            }
+            offset += 8 + size + (size and 1)
+        }
+        throw java.io.IOException("No audio in $path")
     }
 
     private fun chill(voice: Int, seed: Long): FloatArray = when (voice) {
@@ -162,26 +182,6 @@ object StarterKit {
         }
         6 -> render(0.4, seed) { t -> bandpass(2, square(0, 540.0) + square(1, 800.0), 800.0, 3.0) * (decay(t, 12.0) + 0.4 * decay(t, 60.0)) }
         else -> render(0.4, seed) { t -> sine(0, 320 + 90 * decay(t, 60.0)) * decay(t, 12.0) }
-    }
-
-    private fun fart(voice: Int, seed: Long): FloatArray = squash(fartVoice(voice, seed), 3.0)
-
-    private fun squash(sound: FloatArray, amount: Double): FloatArray {
-        var peak = 0f
-        for (value in sound) peak = max(peak, abs(value))
-        if (peak > 0) for (i in sound.indices) sound[i] = drive(sound[i] / peak.toDouble(), amount).toFloat()
-        return sound
-    }
-
-    private fun fartVoice(voice: Int, seed: Long): FloatArray = when (voice) {
-        0 -> render(0.55, seed) { t -> toot(58 - 22 * t / 0.55, 170.0, 0.3, 0.15, 0.0) * rise(t, 0.01) * decay(t, 4.0) }
-        1 -> render(0.45, seed) { t -> toot(125 - 45 * t / 0.45, 330.0, 0.25, 0.2, 0.0) * rise(t, 0.008) * decay(t, 5.0) }
-        2 -> render(0.3, seed) { t -> toot(150.0, 520.0, 0.45, 1.2, 0.02) * decay(t, 11.0) + bandpass(9, noise(), 1400.0, 0.7) * decay(t, 25.0) * 0.6 }
-        3 -> render(0.12, seed) { t -> toot(420 + 160 * t / 0.12, 1300.0, 0.12, 0.1, 0.0) * rise(t, 0.004) * decay(t, 25.0) }
-        4 -> render(0.45, seed) { t -> toot(330 + 260 * t / 0.45, 1100.0, 0.15, 0.2, 0.01) * rise(t, 0.01) * decay(t, 4.0) }
-        5 -> render(0.4, seed) { t -> toot(95.0, 450.0, 0.4, 0.9, 0.03) * (decay(t, 25.0) + (if (t > 0.09) decay(t - 0.09, 14.0) else 0.0)) }
-        6 -> render(0.8, seed) { t -> toot(26 + 6 * sin(2 * PI * 3 * t), 280.0, 0.35, 0.3, 0.015) * rise(t, 0.01) * (1 - t / 0.8) }
-        else -> render(1.4, seed) { t -> toot((68 - 14 * t) * (1 + 0.06 * sin(2 * PI * 4.5 * t)), 240.0, 0.3, 0.25, 0.012) * sin(PI * min(1.0, t / 1.4)).pow(0.5) }
     }
 
     private fun house(voice: Int, seed: Long): FloatArray = when (voice) {
@@ -489,14 +489,6 @@ object StarterKit {
         return highpass(base + 6, highpass(base + 7, sum / METAL_HZ.size, 6500.0), 6500.0)
     }
 
-    private fun Gen.toot(hz: Double, formant: Double, rough: Double, wet: Double, sputter: Double): Double {
-        val wobble = (smooth(20, noise(), 8.0) * 60).coerceIn(-2.0, 2.0)
-        val pulse = flap(hz * (1 + 0.08 * wobble), rough)
-        val body = bandpass(1, pulse, formant, 2.5) + 0.6 * bandpass(5, pulse, formant * 2.4, 3.5) + 0.8 * lowpass(2, pulse * 4, formant * 0.5)
-        val air = bandpass(3, noise(), formant * 3, 0.8) * wet * (0.3 + abs(smooth(22, body, 40.0)) * 20).coerceAtMost(1.5)
-        return (body + air * 0.08) * gap(sputter)
-    }
-
     private fun Gen.ride(t: Double, rate: Double): Double {
         var v = 0.0
         for ((k, hz) in doubleArrayOf(3020.0, 4230.0, 5170.0, 6210.0, 7400.0, 8120.0).withIndex()) v += sin(2 * PI * hz * t) / (k + 1)
@@ -551,28 +543,8 @@ object StarterKit {
         private val lines = arrayOfNulls<DoubleArray>(SLOTS)
         private val heads = IntArray(SLOTS)
 
-        private var flapPhase = 0.0
-        private var flapRate = 1.0
-        private var flapLevel = 1.0
-        private var gapLeft = 0
-        private var gapLevel = 1.0
-
         fun noise() = random.nextDouble() * 2 - 1
 
-        fun flap(hz: Double, roughness: Double): Double {
-            flapPhase += hz * flapRate / RATE
-            if (flapPhase < 1) return 0.0
-            flapPhase -= 1
-            flapRate = 1 + roughness * noise()
-            flapLevel = 1 - roughness * 0.8 * random.nextDouble()
-            return flapLevel
-        }
-
-        fun gap(odds: Double): Double {
-            if (gapLeft > 0) gapLeft-- else if (chance(odds / 100)) gapLeft = (RATE * (0.006 + 0.02 * random.nextDouble())).toInt()
-            gapLevel += ((if (gapLeft > 0) 0.05 else 1.0) - gapLevel) * 0.02
-            return gapLevel
-        }
         fun chance(odds: Double) = random.nextDouble() < odds
         fun phase(slot: Int, hz: Double): Double { phases[slot] = (phases[slot] + hz / RATE) % 1.0; return phases[slot] }
         fun sine(slot: Int, hz: Double) = sin(2 * PI * phase(slot, hz))

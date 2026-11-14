@@ -15,6 +15,11 @@ public final class SampleProcessor {
         return stretch(shifted, Math.max(1, (int) Math.round(source.length * 100.0 / speed)));
     }
 
+    public static short[] shift(short[] source, double cents) {
+        if (source.length == 0 || cents == 0) return source;
+        return stretch(resample(source, Math.pow(2, cents / 1200)), source.length);
+    }
+
     private static short[] resample(short[] source, double ratio) {
         short[] result = new short[Math.max(1, (int) Math.round(source.length / ratio))];
         for (int i = 0; i < result.length; i++) {
