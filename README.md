@@ -11,7 +11,9 @@ Record from your mic, another app, or load samples directly and slice them into 
 
 Tape Deck Sampler supports Project, MIDI and WAV exports.
 
-Each track plays one sample at a time. Triggering another pad on that track cuts off its previous sample and starts the new one. Samples on other tracks keep playing.
+## Download
+
+[Download from GitHub](https://github.com/KabisCube/Tape-Deck-Sampler/releases)
 
 
 ## Clap & Sync
