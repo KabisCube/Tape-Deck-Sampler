@@ -34,7 +34,8 @@ public final class DeviceChecks extends Instrumentation {
     private boolean speechOnly;
     private boolean filtersOnly;
     private boolean robotOnly;
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); filtersOnly = arguments != null && "filters".equals(arguments.getString("scope")); robotOnly = arguments != null && "robot".equals(arguments.getString("scope")); buttonsOnly = arguments != null && "buttons".equals(arguments.getString("scope")); tracksOnly = arguments != null && "tracks".equals(arguments.getString("scope")); padPitchOnly = arguments != null && "padpitch".equals(arguments.getString("scope")); effectsOnly = arguments != null && "effects".equals(arguments.getString("scope")); pagesOnly = arguments != null && "pages".equals(arguments.getString("scope")); speechOnly = arguments != null && "speech".equals(arguments.getString("scope")); start(); }
+    private boolean projectsOnly;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); filtersOnly = arguments != null && "filters".equals(arguments.getString("scope")); robotOnly = arguments != null && "robot".equals(arguments.getString("scope")); projectsOnly = arguments != null && "projects".equals(arguments.getString("scope")); buttonsOnly = arguments != null && "buttons".equals(arguments.getString("scope")); tracksOnly = arguments != null && "tracks".equals(arguments.getString("scope")); padPitchOnly = arguments != null && "padpitch".equals(arguments.getString("scope")); effectsOnly = arguments != null && "effects".equals(arguments.getString("scope")); pagesOnly = arguments != null && "pages".equals(arguments.getString("scope")); speechOnly = arguments != null && "speech".equals(arguments.getString("scope")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
@@ -42,6 +43,11 @@ public final class DeviceChecks extends Instrumentation {
             ready();
             if (filtersOnly) {
                 stage("Filter and distortion controls"); filterMenus(); stage("Pad lighting"); padLights(); stage("Text overlap audit"); textAudit();
+            } else if (projectsOnly) {
+                stage("First launch"); main(() -> check(app.instrument.cassetteBusy(), "First launch shows the intro cassette"));
+                await(() -> !app.instrument.cassetteBusy(), 8000);
+                main(() -> check(app.mode == MainActivity.Mode.HOME, "Intro lands on the main screen"));
+                stage("Project import"); projectImport();
             } else if (robotOnly) {
                 stage("Robot voices"); robotMenus();
             } else if (speechOnly) {
@@ -396,7 +402,7 @@ public final class DeviceChecks extends Instrumentation {
             check(app.tape != null && app.audio != null, "Session and audio engine launch");
             check(Arrays.equals(MainActivity.MENU, new String[]{"Track effects", "Add sample", "Tempo", "Sync", "Projects", "System", "Check the back"}), "Slicing is accessed through the wheel and the back view is last in the main menu");
             app.batteries.found = false;
-            check(app.systemItems()[3].startsWith("Left hand mode") && !Arrays.asList(app.systemItems()).contains("Check the back"), "System contains device settings");
+            check(app.systemItems()[2].equals("Effect volume") && app.systemItems()[4].startsWith("Left hand mode") && !Arrays.asList(app.systemItems()).contains("Check the back"), "System contains device settings");
             check(Arrays.equals(MainActivity.PROJECT_ITEMS, new String[]{"Open", "Name", "Color", "Export", "Delete"}), "Project menu holds the loaded tape's actions");
             root("Projects");
             check(app.mode == MainActivity.Mode.PROJECT_OPEN && app.carouselKey() == app.session.number, "Projects opens the carousel on the loaded tape");
@@ -467,24 +473,24 @@ public final class DeviceChecks extends Instrumentation {
             Arrays.fill(app.secretOn, false); Arrays.fill(app.secretUnlocked, false);
             app.batteries.found = false;
             app.mode = MainActivity.Mode.SYSTEM;
-            check(app.systemItems().length == 4, "Flags stay hidden in the default order");
+            check(app.systemItems().length == 5, "Flags stay hidden in the default order");
             app.sequencer.swapPages(0, 7); app.sequencer.swapPages(1, 13);
-            check(app.systemItems().length == 5 && app.systemItems()[4].equals("Trans flag / Off"), "Blue then pink reveals the trans flag setting");
+            check(app.systemItems().length == 6 && app.systemItems()[5].equals("Trans flag / Off"), "Blue then pink reveals the trans flag setting");
             app.sequencer.swapPages(1, 13);
-            check(app.systemItems().length == 4, "The setting hides again until it has been turned on");
+            check(app.systemItems().length == 5, "The setting hides again until it has been turned on");
             app.sequencer.swapPages(1, 13);
-            app.selection = 4; app.confirm();
+            app.selection = 5; app.confirm();
             check(app.secretOn[MainActivity.SECRET_TRANS] && app.secretUnlocked[MainActivity.SECRET_TRANS], "Turning the trans flag on unlocks it");
             app.confirm(); check(!app.secretOn[MainActivity.SECRET_TRANS] && app.secretUnlocked[MainActivity.SECRET_TRANS], "Turning it off keeps the unlock");
             app.confirm();
             app.sequencer.swapPages(1, 13); app.sequencer.swapPages(0, 7);
-            check(app.systemItems()[4].equals("Trans flag / On"), "The trans flag setting stays after reordering");
+            check(app.systemItems()[5].equals("Trans flag / On"), "The trans flag setting stays after reordering");
             for (int p = 0; p < 8; p++) app.sequencer.swapPages(p, p + 8);
-            check(app.systemItems().length == 6 && app.systemItems()[5].equals("Pride flag / Off"), "Moving every page reveals the pride flag setting");
-            app.selection = 5; app.confirm();
+            check(app.systemItems().length == 7 && app.systemItems()[6].equals("Pride flag / Off"), "Moving every page reveals the pride flag setting");
+            app.selection = 6; app.confirm();
             check(app.secretOn[MainActivity.SECRET_PRIDE] && app.secretUnlocked[MainActivity.SECRET_PRIDE] && app.secretOn[MainActivity.SECRET_TRANS], "Turning the pride flag on unlocks it");
             for (int p = 0; p < 8; p++) app.sequencer.swapPages(p, p + 8);
-            check(app.systemItems().length == 6, "The pride flag setting stays after reordering");
+            check(app.systemItems().length == 7, "The pride flag setting stays after reordering");
             int blue = -1, yellow = -1;
             for (int p = 0; p < 16; p++) { if (app.sequencer.page(p).color == 0xff2fa8f0) blue = p; if (app.sequencer.page(p).color == 0xffffd93d) yellow = p; }
             app.sequencer.swapPages(0, blue);
@@ -924,6 +930,10 @@ public final class DeviceChecks extends Instrumentation {
             app.cancel(); check(app.wheelSensitivity == 100 && app.selection == 1, "Sensitivity cancel restores the old value");
             app.confirm(); app.wheel(1000); check(app.wheelSensitivity == 200, "Sensitivity has an upper bound");
             app.wheel(-1000); check(app.wheelSensitivity == 25, "Sensitivity cannot disable the wheel"); app.cancel();
+            int effectVolume = app.deckSounds.getVolumePercent();
+            app.selection = MainActivity.SYSTEM_EFFECT_VOLUME; app.confirm(); app.wheel(-1000);
+            check(app.mode == MainActivity.Mode.EFFECT_VOLUME && app.deckSounds.getVolumePercent() == 0, "Effect volume turns down to off");
+            app.cancel(); check(app.deckSounds.getVolumePercent() == effectVolume && app.selection == MainActivity.SYSTEM_EFFECT_VOLUME, "Effect volume cancel restores the old value");
             app.mode = MainActivity.Mode.MENU; app.selection = 0; app.wheelSensitivity = 50; rotate(); check(app.selection == 1, "Lower sensitivity reduces drag movement");
             app.selection = 0; app.wheelSensitivity = 200; rotate(); check(app.selection == 5, "Higher sensitivity increases drag movement");
             app.mode = MainActivity.Mode.MENU; app.selection = 0; app.wheelSensitivity = 50;
@@ -931,8 +941,8 @@ public final class DeviceChecks extends Instrumentation {
             app.wheelSensitivity = 200; scroll(-3); check(app.selection >= 2, "Higher sensitivity also applies to the mouse");
             app.wheelSensitivity = 100; root("System"); app.selection = 1; app.confirm(); app.wheel(-5); app.confirm();
             check(app.getSharedPreferences("tapedecksampler", 0).getInt("wheelSensitivity", 0) == 75, "Sensitivity is saved globally");
-            boolean old = app.darkTheme; app.selection = 2; app.confirm(); check(app.darkTheme != old, "Dark theme toggles");
-            boolean oldHand = app.leftHandMode; app.selection = 3; app.confirm();
+            boolean old = app.darkTheme; app.selection = MainActivity.SYSTEM_THEME; app.confirm(); check(app.darkTheme != old, "Dark theme toggles");
+            boolean oldHand = app.leftHandMode; app.selection = MainActivity.SYSTEM_LEFT_HAND; app.confirm();
             check(app.leftHandMode != oldHand && app.instrument.playX() == (app.leftHandMode ? InstrumentView.ZOOM_X : InstrumentView.PLAY_X) && app.instrument.zoomX() == (app.leftHandMode ? InstrumentView.PLAY_X : InstrumentView.ZOOM_X), "Left hand mode swaps button positions");
             app.mode = MainActivity.Mode.HOME; app.sequencer.stop(); play();
             check(app.sequencer.isPlaying() || app.sequencer.isSyncWaiting(), "Play responds at its swapped position");
@@ -960,10 +970,13 @@ public final class DeviceChecks extends Instrumentation {
                 zip.putNextEntry(new java.util.zip.ZipEntry("project.json")); zip.write(project.toString().getBytes("UTF-8")); zip.closeEntry();
                 zip.putNextEntry(new java.util.zip.ZipEntry("tape.wav")); app.tape.export(zip); zip.closeEntry();
             } catch (Exception e) { throw new AssertionError(e); }
-            app.mode = MainActivity.Mode.PROJECTS; app.importProject(Uri.fromFile(archive));
+            root("Projects");
+            check(app.mode == MainActivity.Mode.PROJECT_OPEN, "Menu opens the shelf");
+            app.importProject(Uri.fromFile(archive));
         });
         ready(); await(() -> !app.instrument.cassetteBusy() && !app.busy, 8000); ready();
         main(() -> {
+            check(app.mode == MainActivity.Mode.HOME, "Import returns to the main screen");
             check(app.sessions.size() == count + 1 && app.session.name().equals("Imported groove".substring(0, SessionStore.LABEL_LIMIT).trim()), "Import adds the project as a new tape and loads it, with its name cut to fit the label");
             check(app.sequencer.bpm() == 97 && app.track == 2 && MainActivity.CASSETTE_NAMES[app.colorIndex(app.session)].equals("Toxic"), "Import restores settings and cassette color");
         });
@@ -971,6 +984,10 @@ public final class DeviceChecks extends Instrumentation {
         try (FileOutputStream raw = new FileOutputStream(bad)) { raw.write(new byte[]{1, 2, 3}); }
         main(() -> app.importProject(Uri.fromFile(bad))); ready();
         main(() -> check(app.sessions.size() == count + 1, "Invalid files do not create tapes"));
+        File out = new File(getTargetContext().getCacheDir(), "export-test.tapedeck.zip");
+        main(() -> { app.mode = MainActivity.Mode.EXPORT; app.selection = MainActivity.EXPORT_PROJECT; app.onActivityResult(25, Activity.RESULT_OK, new Intent().setData(Uri.fromFile(out))); });
+        ready();
+        main(() -> check(app.mode == MainActivity.Mode.HOME && out.length() > 0, "Export writes the project and returns to the main screen"));
     }
 
     private void sessions() throws Exception {

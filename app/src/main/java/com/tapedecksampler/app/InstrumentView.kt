@@ -97,6 +97,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private var throwColor = 0
     private var newPeelStart = 0L
     private var deckFrame = 0L
+    private var deckResting = true
     private var marker: Typeface? = null
     private var insertStart = -1L
     private var carouselStart = 0L
@@ -222,7 +223,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         turningNow = false
         if (lidOnTop) travellingLid(c, flip, back)
         c.restore()
-        val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || app.carouselMode() || app.newCassetteActive() || app.renameActive() || throwStart >= 0 || deckOut > 0 || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0
+        val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || introName != null || app.carouselMode() || app.newCassetteActive() || app.renameActive() || throwStart >= 0 || deckOut > 0 || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0 || !hatchHoldResting
         if (animating && (splitGroup >= 0 || moving)) postInvalidateOnAnimation()
         else if (animating && (app.sequencer.isPlaying() || app.sequencer.isSyncWaiting() || app.sequencer.isPreviewing() || app.mode == Mode.RECORDING || app.mode == Mode.FX_REORDER || app.busy)) postInvalidateDelayed(FRAME_MILLIS)
     }
@@ -306,11 +307,14 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     private fun front(c: Canvas, now: Long) {
         bevel(c)
+        stepIntro(now)
         var t = if (insertStart < 0) -1L else now - insertStart
         if (t >= CLOSE_END) { insertStart = -1; t = -1 }
-        val hatch = if (t < 0) deckHatch() else hatchAngle(t)
+        stepHatchHold(now, t)
+        val hatch = max(if (t < 0) deckHatch() else hatchAngle(t), heldHatch())
         hatchOn = hatch > 0
         frameT = t
+        playMotionSounds(hatch, t)
         frameSpool = spoolProgress()
         c.save()
         c.translate(0f, TOP_SHIFT)
@@ -338,6 +342,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.restore()
         carousel(c, now)
         if (t >= 0) risingCassette(c, t)
+        introHover(c, now)
         if (throwStart >= 0) thrownCassette(c, now)
     }
 
@@ -361,7 +366,37 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         invalidate()
     }
 
-    fun cassetteBusy() = insertStart >= 0
+    private var introName: String? = null
+    private var introColor = 0
+    private var introUntil = -1L
+
+    private var introScreenOff = false
+
+    fun introCassette(name: String, color: Int) { introName = name; introColor = color; introUntil = -1; introScreenOff = true; invalidate() }
+
+    private fun stepIntro(now: Long) {
+        val name = introName
+        if (name == null) {
+            val cassetteLanded = insertStart < 0 || now - insertStart >= LOAD_END
+            if (introScreenOff && cassetteLanded) { introScreenOff = false; revealStart = now }
+            return
+        }
+        if (introUntil < 0) introUntil = now + INTRO_HATCH_DELAY_MILLIS + INTRO_HOVER_MILLIS
+        if (now < introUntil) return
+        introName = null
+        insertCassette(name, introColor, null, 0)
+    }
+
+    private fun introHatchOpen(now: Long) = introName != null && introUntil >= 0 && now >= introUntil - INTRO_HOVER_MILLIS
+
+    private fun introHover(c: Canvas, now: Long) {
+        val name = introName ?: return
+        val bob = sin((introUntil - now) / BOB_MILLIS).toFloat() * BOB_HEIGHT
+        hoverShadow(c, UI_CENTER_X, CAROUSEL_Y + bob)
+        cassette(c, UI_CENTER_X, CAROUSEL_Y + bob, introColor, name, 0f)
+    }
+
+    fun cassetteBusy() = insertStart >= 0 || introName != null
 
     fun throwCassette(name: String, color: Int) {
         throwName = name; throwColor = color
@@ -382,10 +417,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun hatchAngle(t: Long): Float = when {
-        t < RISE_END -> 0f
-        t < OPEN_END -> HATCH_DEGREES * ease((t - RISE_END) / (OPEN_END - RISE_END).toFloat())
+        t < OPEN_END -> HATCH_DEGREES * snap(t / OPEN_END.toFloat())
         t < LOAD_END -> HATCH_DEGREES
-        else -> HATCH_DEGREES * (1 - ease((t - LOAD_END) / (CLOSE_END - LOAD_END).toFloat()))
+        else -> HATCH_DEGREES * (1 - snap((t - LOAD_END) / (CLOSE_END - LOAD_END).toFloat()))
     }
 
     private fun applyHatch(c: Canvas, degrees: Float) {
@@ -399,6 +433,68 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         c.concat(hatchMatrix)
     }
 
+    private var hatchHold = 0f
+    private var hatchHoldOpening = false
+    private var hatchHoldFrame = 0L
+    private var hatchHoldResting = true
+
+    private fun stepHatchHold(now: Long, t: Long) {
+        val goal = if (cassetteReturningToDeck() || introHatchOpen(now)) 1f else 0f
+        val dt = if (hatchHoldResting) 0f else min(100L, now - hatchHoldFrame) / HATCH_MILLIS.toFloat()
+        hatchHoldFrame = now
+        val insertTookOver = t >= OPEN_END
+        if (insertTookOver) hatchHold = 0f
+        else if (t < 0) {
+            hatchHoldOpening = goal > hatchHold || hatchHoldOpening && goal == hatchHold
+            hatchHold = if (goal > hatchHold) min(goal, hatchHold + dt) else max(goal, hatchHold - dt)
+        }
+        hatchHoldResting = hatchHold == goal
+    }
+
+    private fun heldHatch() = HATCH_DEGREES * if (hatchHoldOpening) snap(hatchHold) else 1 - snap(1 - hatchHold)
+
+    private var lastHatch = 0f
+    private var hatchDirection = 0
+    private var lastWellY = SLOT_Y
+    private var lastWellLoaded = false
+    private var wellDirection = 0
+
+    private fun playMotionSounds(hatch: Float, t: Long) {
+        val hatchMove = Math.signum(hatch - lastHatch).toInt()
+        if (hatchMove != 0 && hatchMove != hatchDirection) app.deckSounds.play(if (hatchMove > 0) DeckSounds.Cue.HATCH_OPEN else DeckSounds.Cue.HATCH_CLOSE)
+        if (hatchMove != 0) hatchDirection = hatchMove
+        lastHatch = hatch
+        val wellY = wellCassetteY(t)
+        val wellLoaded = wellCassetteName(t) != null
+        val wellMove = if (wellLoaded && lastWellLoaded) Math.signum((wellY - lastWellY) * (OUT_Y - SLOT_Y)).toInt() else 0
+        if (wellMove != 0 && wellMove != wellDirection) app.deckSounds.play(if (wellMove > 0) DeckSounds.Cue.CASSETTE_EJECT else DeckSounds.Cue.CASSETTE_INSERT)
+        wellDirection = if (wellLoaded) (if (wellMove != 0) wellMove else wellDirection) else 0
+        lastWellY = wellY
+        lastWellLoaded = wellLoaded
+    }
+
+    private fun wellCassetteY(t: Long): Float = when {
+        t < 0 -> deckWellY()
+        t < EJECT_START -> SLOT_Y
+        t < EJECT_END -> SLOT_Y + (OUT_Y - SLOT_Y) * ease((t - EJECT_START) / EJECT_MILLIS.toFloat())
+        t < RISE_END -> OUT_Y
+        t < LOAD_END -> OUT_Y + (SLOT_Y - OUT_Y) * ease((t - RISE_END) / LOAD_MILLIS.toFloat())
+        else -> SLOT_Y
+    }
+
+    private fun wellCassetteName(t: Long): String? = when {
+        t < 0 -> if (app.noTape || introName != null || deckOut >= DECK_LIFTED) null else app.session.name()
+        t < EJECT_END -> ejectName
+        t < RISE_END -> null
+        else -> insertName
+    }
+
+    private fun wellCassetteColor(t: Long): Int = when {
+        t < 0 -> app.cassetteColor(app.session)
+        t < RISE_END -> ejectColor
+        else -> insertColor
+    }
+
     private fun hatchWell(c: Canvas, t: Long) {
         rect(c, HATCH_L, HATCH_T, HATCH_R, HATCH_B, 10f, 0xff16171a.toInt())
         rect(c, HATCH_L + 6, HATCH_T + 4, HATCH_R - 6, HATCH_T + 30, 6f, 0xff22241f.toInt())
@@ -407,19 +503,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun wellCassette(c: Canvas, t: Long) {
-        var y = SLOT_Y
-        var name = ejectName
-        var color = ejectColor
-        if (t < 0) {
-            y = deckWellY()
-            name = if (app.noTape || deckOut >= DECK_LIFTED) null else app.session.name()
-            color = app.cassetteColor(app.session)
-        } else if (t in OPEN_END until EJECT_END) y = SLOT_Y + (OUT_Y - SLOT_Y) * ease((t - OPEN_END) / (EJECT_END - OPEN_END).toFloat())
-        else if (t >= EJECT_END) {
-            name = insertName; color = insertColor
-            y = if (t >= LOAD_END) SLOT_Y else OUT_Y + (SLOT_Y - OUT_Y) * ease((t - EJECT_END) / (LOAD_END - EJECT_END).toFloat())
-        }
-        if (name != null) cassette(c, UI_CENTER_X, y, color, name, frameSpool)
+        val name = wellCassetteName(t) ?: return
+        cassette(c, UI_CENTER_X, wellCassetteY(t), wellCassetteColor(t), name, frameSpool)
     }
 
     private fun hatchPanel(c: Canvas, degrees: Float) {
@@ -612,24 +697,29 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     private fun loadedKey() = if (app.noTape) Int.MIN_VALUE + 1 else app.session.number
 
+    private fun deckGoal() = if (app.renameActive() || app.carouselMode() && app.carouselKey() == loadedKey()) 1f else 0f
+
+    private fun cassetteReturningToDeck() = insertStart < 0 && deckGoal() == 0f && deckOut > DECK_LIFTED
+
     private fun stepDeckOut(now: Long) {
-        val dt = min(100L, now - deckFrame) / DECK_OUT_MILLIS
+        val goal = deckGoal()
+        val dt = if (deckResting) 0f else min(100L, now - deckFrame) / DECK_OUT_MILLIS
         deckFrame = now
         if (insertStart >= 0) { deckOut = 0f; return }
-        val goal = if (app.renameActive() || app.carouselMode() && app.carouselKey() == loadedKey()) 1f else 0f
         deckOut = if (goal > deckOut) min(goal, deckOut + dt) else max(goal, deckOut - dt)
+        deckResting = deckOut == goal
     }
 
     private fun deckHatch(): Float = HATCH_DEGREES * when {
         deckOut <= 0f -> 0f
-        deckOut < DECK_OPENED -> ease(deckOut / DECK_OPENED)
+        deckOut < DECK_OPENED -> snap(deckOut / DECK_OPENED)
         deckOut < DECK_LIFTED -> 1f
-        deckOut < DECK_CLOSED -> 1 - ease((deckOut - DECK_LIFTED) / (DECK_CLOSED - DECK_LIFTED))
+        deckOut < DECK_CLOSED -> 1 - snap((deckOut - DECK_LIFTED) / (DECK_CLOSED - DECK_LIFTED))
         else -> 0f
     }
 
     private fun deckWellY(): Float =
-        if (deckOut < DECK_OPENED) SLOT_Y else SLOT_Y + (OUT_Y - SLOT_Y) * ease(min(1f, (deckOut - DECK_OPENED) / (DECK_LIFTED - DECK_OPENED)))
+        if (deckOut < DECK_EJECT_START) SLOT_Y else SLOT_Y + (OUT_Y - SLOT_Y) * ease(min(1f, (deckOut - DECK_EJECT_START) / (DECK_LIFTED - DECK_EJECT_START)))
 
     private fun deckCassette(c: Canvas, x: Float, y: Float, color: Int, name: String?) {
         if (deckOut <= DECK_LIFTED) return
@@ -1334,7 +1424,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         rect(c, ROW_LEFT, 34f + SCREEN_DROP, ROW_RIGHT, 235f, 7f, if (app.darkTheme) 0xff74766a.toInt() else 0xffb2b1a5.toInt())
         rect(c, 20f, 36f + SCREEN_DROP, 380f, 231f, 5f, INK)
         rect(c, 27f, 43f + SCREEN_DROP, 373f, 224f, 2f, LCD_DARK)
-        if (!app.powered()) return
+        if (!app.powered() || introScreenOff) return
         c.save(); c.translate(0f, SCREEN_DROP - CONTENT_LIFT); c.clipRect(SCREEN_LEFT, SCREEN_TOP + CONTENT_LIFT, SCREEN_RIGHT, SCREEN_BOTTOM - SCREEN_DROP + CONTENT_LIFT)
         drawingScreen = true
         text(c, String.format(Locale.US, "%03d BPM", app.sequencer.bpm()), LCD_LEFT, 61f + HEADER_DROP, LCD_TEXT, LCD, mono)
@@ -1410,6 +1500,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.FX_ADD -> menu(c, app.addItems(), LCD, app.addGroups())
             Mode.FX_REORDER -> effectStack(c)
             Mode.VIBRATION -> value(c, "VIBRATION INTENSITY", if (app.vibrationIntensity == 0) "OFF" else app.vibrationIntensity.toString() + "%", "TURN TO FEEL / SELECT TO SAVE")
+            Mode.EFFECT_VOLUME -> value(c, "EFFECT VOLUME", if (app.deckSounds.volumePercent == 0) "OFF" else app.deckSounds.volumePercent.toString() + "%", "HATCH AND CASSETTE SOUNDS / SELECT TO SAVE")
             Mode.SENSITIVITY -> value(c, "WHEEL SENSITIVITY", app.wheelSensitivity.toString() + "%", "${MainActivity.MIN_WHEEL}–${MainActivity.MAX_WHEEL}% / SELECT TO SAVE")
             Mode.TEMPO -> menu(c, app.tempoItems())
             Mode.BPM -> value(c, "SEQUENCER TEMPO", app.sequencer.bpm().toString(), if (app.clapClock != null) "BPM / CHANGE REJOINS NEXT LOOP" else "BPM / ${Sequencer.MIN_BPM}–${Sequencer.MAX_BPM}")
@@ -2927,13 +3018,21 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val CAROUSEL_TRAVEL = 420f
         private const val BOB_MILLIS = 520.0
         private const val BOB_HEIGHT = 2.5f
+        private const val INTRO_HOVER_MILLIS = 1000L
+        private const val INTRO_HATCH_DELAY_MILLIS = 400L
         private const val SLOT_Y = 14f + CASSETTE_H / 2
         private const val OUT_Y = -150f
-        private const val RISE_END = 450L
-        private const val OPEN_END = 700L
-        private const val EJECT_END = 1000L
-        private const val LOAD_END = 1350L
-        private const val CLOSE_END = 1600L
+        private const val HATCH_MILLIS = 125L
+        private const val HATCH_SETTLE_MILLIS = 0L
+        private const val EJECT_MILLIS = 300L
+        private const val LOAD_MILLIS = 350L
+        private const val EJECT_CLEARANCE_MILLIS = 150L
+        private const val OPEN_END = HATCH_MILLIS
+        private const val EJECT_START = OPEN_END + HATCH_SETTLE_MILLIS
+        private const val EJECT_END = EJECT_START + EJECT_MILLIS
+        private const val RISE_END = EJECT_END + EJECT_CLEARANCE_MILLIS
+        private const val LOAD_END = RISE_END + LOAD_MILLIS
+        private const val CLOSE_END = LOAD_END + HATCH_MILLIS
         private const val CAROUSEL_MILLIS = 320L
         private const val FLIP_MILLIS = 800L
         private const val BLINK_MILLIS = 170L
@@ -2972,9 +3071,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val SQUEEZED = "#Z@"
         private const val LABEL_HALF = 74f
         private const val NEW_COLOR = 1
-        private const val DECK_OPENED = 0.22f
+        private const val DECK_OPENED = HATCH_MILLIS / DECK_OUT_MILLIS
+        private const val DECK_EJECT_START = DECK_OPENED + HATCH_SETTLE_MILLIS / DECK_OUT_MILLIS
         private const val DECK_LIFTED = 0.5f
-        private const val DECK_CLOSED = 0.75f
+        private const val DECK_CLOSED = DECK_LIFTED + HATCH_MILLIS / DECK_OUT_MILLIS
         private const val PAD_COLUMNS = 4
         private const val PAD_ROWS = Sequencer.STEPS / PAD_COLUMNS
         private const val PRESS_DEPTH = 2f
@@ -3073,6 +3173,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private fun settle(t: Float): Float {
             val v = 1 - max(0f, min(1f, t))
             return 1 - v * v * v
+        }
+
+        private fun snap(t: Float): Float {
+            val remaining = 1 - max(0f, min(1f, t))
+            return 1 - remaining * remaining * remaining
         }
 
         private fun ease(t: Float): Float {

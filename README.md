@@ -102,7 +102,7 @@ Tape Deck Sampler is distributed in the hope that it will be useful, but WITHOUT
 
 ## Credits
 
-The Album Marker font (`app/src/main/assets/fonts/AlbumMarker01-Regular.ttf`) is made by KabisCube and licensed under the same GNU GPL v3-or-later license as the rest of this project.
+The Album Marker font (`app/src/main/assets/fonts/AlbumMarker01-Regular.ttf`) and the hatch and cassette sound effects (`app/src/main/assets/sounds/`) was made by KabisCube and licensed under the same GNU GPL v3-or-later license as the rest of this project.
 
 Built with [Kotlin](https://kotlinlang.org/) by JetBrains. The Kotlin standard library is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 

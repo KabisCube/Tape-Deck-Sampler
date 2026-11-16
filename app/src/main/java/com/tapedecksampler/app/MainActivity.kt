@@ -48,7 +48,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 class MainActivity : Activity(), AudioEngine.Listener {
-    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
+    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, EFFECT_VOLUME, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
 
     fun interface Work { @Throws(Exception::class) fun run() }
 
@@ -356,6 +356,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private var swingBefore = 0
     @JvmField var vibrationIntensity = 0
     private var vibrationBefore = 0
+    lateinit var deckSounds: DeckSounds
+    private var effectVolumeBefore = 0
     private var vibrator: Vibrator? = null
     private var vibrationEffect: VibrationEffect? = null
     private var vibrationAttributes: VibrationAttributes? = null
@@ -388,6 +390,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
         vibrator = getSystemService(Vibrator::class.java)
         if (Build.VERSION.SDK_INT >= 33) vibrationAttributes = VibrationAttributes.Builder().setUsage(VibrationAttributes.USAGE_TOUCH).build()
         setVibrationIntensity(settings.getInt("vibrationIntensity", DEFAULT_VIBRATION))
+        deckSounds = DeckSounds(assets)
+        deckSounds.volumePercent = settings.getInt("effectVolume", DeckSounds.DEFAULT_VOLUME)
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
@@ -417,7 +421,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 if (!settings.edit().putBoolean("sessionMigrationComplete", true).commit()) throw IOException("Cannot save project settings")
             }
             sessions = sessionStore.list()
-            if (sessions.isEmpty()) {
+            val firstRun = sessions.isEmpty()
+            if (firstRun) {
                 activateSession(openSession(sessionStore.create()))
                 sessions = sessionStore.list()
             } else {
@@ -425,6 +430,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 activateSession(openSession(sessions.lastOrNull { it.id == active } ?: sessions[0]))
             }
             instrument = InstrumentView(this)
+            if (firstRun) instrument.introCassette(session.name(), cassetteColor(session))
             instrument.setOnApplyWindowInsetsListener { view, insets ->
                 @Suppress("DEPRECATION")
                 view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
@@ -598,6 +604,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     override fun onDestroy() {
         if (::audio.isInitialized) audio.stop()
+        if (::deckSounds.isInitialized) deckSounds.release()
         val current = if (::tape.isInitialized) tape else null
         val prepared = preparedSession
         worker.execute {
@@ -928,7 +935,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private fun systemSecrets() = SYSTEM_BATTERIES + if (batteries.found) 1 else 0
 
     fun systemItems(): Array<String> {
-        val items = arrayListOf("Vibration intensity", "Wheel sensitivity", "Dark theme / " + onOff(darkTheme), "Left hand mode / " + onOff(leftHandMode))
+        val items = arrayListOf("Vibration intensity", "Wheel sensitivity", "Effect volume", "Dark theme / " + onOff(darkTheme), "Left hand mode / " + onOff(leftHandMode))
         if (batteries.found) items.add("Require batteries / " + onOff(batteries.useBatteries))
         for (secret in 0 until SECRETS) if (secretVisible(secret)) items.add(SECRET_LABELS[secret] + " / " + onOff(secretOn[secret]))
         return items.toTypedArray()
@@ -1013,7 +1020,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     fun newCassetteActive() = newFromShelf && (mode == Mode.TEXT || mode == Mode.PROJECT_COLOR && colorForNew)
 
     private var openFromMenu = false
-    private var projectsAfterLoad = false
+    private var menuAfterLoad = false
 
     private fun browseShelf() {
         mode = Mode.PROJECT_OPEN
@@ -1078,7 +1085,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     private fun openProject(target: SessionStore.Entry) {
         if (target.id == session.id) { mode = if (openFromMenu) Mode.PROJECTS else Mode.HOME; selection = 0; return }
-        projectsAfterLoad = openFromMenu
+        menuAfterLoad = openFromMenu
         instrument.insertCassette(target.name(), cassetteColor(target), deckName(), cassetteColor(session))
         switchSession(target, "", -1, null)
     }
@@ -1146,7 +1153,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private fun switchSession(target: SessionStore.Entry?, name: String, color: Int, afterClose: Runnable?) {
         if (busy || mode == Mode.RECORDING || (target != null && target.id == session.id)) {
             if (!busy && mode != Mode.RECORDING && target != null) mode = Mode.HOME
-            projectsAfterLoad = false
+            menuAfterLoad = false
             return
         }
         save()
@@ -1158,8 +1165,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
             activateSession(preparedSession!!)
             preparedSession = null
             try { sessions = sessionStore.list() } catch (e: Exception) { error(e.message) }
-            mode = if (projectsAfterLoad) Mode.PROJECTS else Mode.HOME
-            projectsAfterLoad = false
+            mode = if (menuAfterLoad) Mode.PROJECTS else Mode.HOME
+            menuAfterLoad = false
             selection = 0
             checkSecrets()
             if (foreground) audio.start()
@@ -1978,6 +1985,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.SYNC -> selection = moveSelection(delta, syncItems().size)
             Mode.SENSITIVITY -> wheelSensitivity = (wheelSensitivity + delta * FAST_STEP.toLong()).coerceIn(MIN_WHEEL.toLong(), MAX_WHEEL.toLong()).toInt()
             Mode.VIBRATION -> setVibrationIntensity((vibrationIntensity + delta * FAST_STEP.toLong()).coerceIn(0L, 100L).toInt())
+            Mode.EFFECT_VOLUME -> {
+                deckSounds.volumePercent = (deckSounds.volumePercent + delta * FAST_STEP.toLong()).coerceIn(0L, 100L).toInt()
+                deckSounds.play(DeckSounds.Cue.HATCH_OPEN)
+            }
             Mode.IMPORT_START -> {
                 val frames = importSource!!.frames
                 val length = importEnd - importStart
@@ -2061,6 +2072,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.SWING -> sequencer.swing().toLong()
         Mode.VIBRATION -> vibrationIntensity.toLong()
         Mode.SENSITIVITY -> wheelSensitivity.toLong()
+        Mode.EFFECT_VOLUME -> deckSounds.volumePercent.toLong()
         Mode.FX_VALUE -> effectValue.toLong()
         Mode.PAGES -> pageCursor.toLong()
         Mode.SYNTH -> if (synthEditing) synth[selection].toLong() else selection.toLong()
@@ -2226,6 +2238,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 settings.edit().putInt("wheelSensitivity", wheelSensitivity).apply()
                 mode = Mode.SYSTEM; selection = SYSTEM_WHEEL
             }
+            Mode.EFFECT_VOLUME -> {
+                settings.edit().putInt("effectVolume", deckSounds.volumePercent).apply()
+                mode = Mode.SYSTEM; selection = SYSTEM_EFFECT_VOLUME
+            }
             Mode.IMPORT_START -> mode = Mode.IMPORT_END
             Mode.IMPORT_END -> prepareImport()
             Mode.EFFECTS -> openEffect()
@@ -2234,7 +2250,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.FX_VALUE -> commitEffect()
             Mode.PROJECTS -> when (selection - projectSelection(0)) {
                 PROJECT_NEW -> requestNewSession()
-                PROJECT_OPEN -> { openFromMenu = false; browseShelf() }
+                PROJECT_OPEN -> if (noTape) { openFromMenu = false; browseShelf() } else { mode = Mode.HOME; selection = 0 }
                 PROJECT_RENAME -> editLoaded { renameProject() }
                 PROJECT_RECOLOR -> editLoaded { colorForNew = false; mode = Mode.PROJECT_COLOR; selection = colorIndex(session) }
                 PROJECT_EXPORT -> editLoaded { mode = Mode.EXPORT; selection = 0 }
@@ -2244,7 +2260,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             Mode.PROJECT_COLOR ->
                 if (colorForNew) {
                     val color = selection
-                    projectsAfterLoad = false
+                    menuAfterLoad = false
                     newFromShelf = false
                     instrument.insertCassette(pendingName, CASSETTE_COLORS[color], deckName(), cassetteColor(session))
                     createSession(pendingName, color)
@@ -2321,7 +2337,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
             }
             Mode.VIBRATION -> { setVibrationIntensity(vibrationBefore); mode = Mode.SYSTEM; selection = SYSTEM_VIBRATION }
             Mode.SENSITIVITY -> { wheelSensitivity = wheelBefore; mode = Mode.SYSTEM; selection = SYSTEM_WHEEL }
-            Mode.PROJECTS -> if (!noTape) { mode = Mode.MENU; selection = MENU_PROJECT }
+            Mode.EFFECT_VOLUME -> { deckSounds.volumePercent = effectVolumeBefore; mode = Mode.SYSTEM; selection = SYSTEM_EFFECT_VOLUME }
+            Mode.PROJECTS -> if (!noTape) { openFromMenu = true; browseShelf() }
             Mode.PROJECT_OPEN -> if (openFromMenu && !noTape) { mode = Mode.MENU; selection = MENU_PROJECT } else { mode = Mode.PROJECTS; selection = projectSelection(PROJECT_OPEN) }
             Mode.PROJECT_COLOR ->
                 if (colorForNew && newFromShelf) { newFromShelf = false; mode = Mode.PROJECT_OPEN; selection = 1 }
@@ -2530,6 +2547,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         when (selection) {
             SYSTEM_VIBRATION -> { vibrationBefore = vibrationIntensity; mode = Mode.VIBRATION }
             SYSTEM_WHEEL -> { wheelBefore = wheelSensitivity; mode = Mode.SENSITIVITY }
+            SYSTEM_EFFECT_VOLUME -> { effectVolumeBefore = deckSounds.volumePercent; mode = Mode.EFFECT_VOLUME }
             SYSTEM_THEME -> {
                 darkTheme = !darkTheme
                 settings.edit().putBoolean("darkTheme", darkTheme).apply()
@@ -2598,6 +2616,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.SYNC_CLAP -> "SYNC / CLAP"
         Mode.VIBRATION -> "SYSTEM / VIBRATION"
         Mode.SENSITIVITY -> "SYSTEM / WHEEL"
+        Mode.EFFECT_VOLUME -> "SYSTEM / EFFECT VOLUME"
         Mode.EFFECTS, Mode.FX_ADD, Mode.FX_OPTIONS, Mode.FX_REORDER, Mode.FX_VALUE -> {
             val target = if (stepTarget < 0) String.format(Locale.US, "PAGE %02d / TRACK %d", sequencer.selectedPage() + 1, track + 1) else "PAD " + String.format(Locale.US, "%02d", stepTarget + 1)
             target + " / " + when {
@@ -2617,7 +2636,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.TEMPO -> "TEMPO"
         Mode.BPM -> "TEMPO / BPM"
         Mode.SWING -> "TEMPO / SWING"
-        Mode.PROJECTS -> "PROJECTS"
+        Mode.PROJECTS -> if (noTape) "PROJECTS" else "PROJECTS / " + session.name().uppercase(Locale.US)
         Mode.PROJECT_OPEN -> "PROJECTS / OPEN"
         Mode.PROJECT_COLOR -> if (colorForNew) "PROJECTS / NEW / COLOR" else "PROJECTS / EDIT / COLOR"
         Mode.PROJECT_DELETE -> "PROJECTS / DELETE"
@@ -2834,7 +2853,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                         zip.closeEntry()
                         zip.finish()
                     }
-                }) { message = "EXPORTED / PROJECT" }
+                }) { message = "EXPORTED / PROJECT"; mode = Mode.HOME; selection = 0 }
             }
             REQUEST_EXPORT_MIDI -> work("EXPORTING MIDI", { openOutput(uri).use { MidiExporter.export(it, sequencer) } }) { message = "EXPORTED / PROJECT MIDI" }
         }
@@ -2890,6 +2909,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         }) {
             refreshSessions()
             val id = importedEntry?.id
+            openFromMenu = false
             sessions.lastOrNull { it.id == id }?.let { openProject(it) }
         }
     }
@@ -3059,9 +3079,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val TEMPO_SWING = 1
         const val SYSTEM_VIBRATION = 0
         const val SYSTEM_WHEEL = 1
-        const val SYSTEM_THEME = 2
-        const val SYSTEM_LEFT_HAND = 3
-        const val SYSTEM_BATTERIES = 4
+        const val SYSTEM_EFFECT_VOLUME = 2
+        const val SYSTEM_THEME = 3
+        const val SYSTEM_LEFT_HAND = 4
+        const val SYSTEM_BATTERIES = 5
         private const val BATTERY_TICK_MS = 1000L
         private const val BATTERY_SAVE_MS = 30_000L
         private const val CHIME_MS = 760
