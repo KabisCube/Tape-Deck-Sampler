@@ -18,7 +18,7 @@ Binaries: https://github.com/KabisCube/Tape-Deck-Sampler/releases/download/v%v/T
 Builds:
   - versionName: 0.2.5
     versionCode: 34
-    commit: v0.2.5
+    commit: eeb177f977ef9d8e6a9a3cf68644f3589de13f62
     subdir: app
     gradle:
       - yes
