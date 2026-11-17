@@ -441,7 +441,7 @@ public final class DeviceChecks extends Instrumentation {
             app.wheel(100); check(app.selection == MainActivity.MENU.length - 1, "Menu stops at the last item");
             app.cancel();
             root("Add sample");
-            check(Arrays.equals(MainActivity.ADD_SAMPLE, new String[]{"Record microphone", "Record device", "Import sample", "Text to speech", "Synth"}), "Add sample offers recording, import, speech and synth");
+            check(Arrays.equals(MainActivity.ADD_SAMPLE, new String[]{"Record microphone", "Record device", "Import sample", "Text to speech", "Synth tone"}), "Add sample offers recording, import, speech and synth");
             app.wheel(-100); check(app.selection == 0, "Add sample stops at its first item");
             app.wheel(100); check(app.selection == MainActivity.ADD_SAMPLE.length - 1, "Add sample stops at its last item");
             app.selection = 1; app.confirm();
@@ -1026,12 +1026,19 @@ public final class DeviceChecks extends Instrumentation {
 
     private void microphone() throws Exception {
         main(() -> {
-            root("Record microphone"); app.cursor = Tape.LENGTH - Tape.RATE / 5; play();
-            check(app.sequencer.isPreviewing() && !app.audio.isRecording(), "Recording position previews existing tape");
+            root("Record microphone");
+            check(app.mode == MainActivity.Mode.MIC_RECORD && !app.audio.isRecording(), "Microphone recording waits for Record");
             app.confirm(); check(app.mode == MainActivity.Mode.RECORDING, "Select starts microphone recording");
         });
-        await(() -> app.mode != MainActivity.Mode.RECORDING, 6000);
-        main(() -> check(app.recordPosition == Tape.LENGTH && app.mode == MainActivity.Mode.HOME, "Recording stops at twenty seconds"));
+        long revision = app.tape.revision();
+        await(() -> app.recordedFrames >= Tape.RATE / 5, 6000);
+        main(() -> app.confirm());
+        await(() -> !app.busy && app.mode == MainActivity.Mode.IMPORT_START && app.importName.equals("Microphone recording"), 6000);
+        main(() -> {
+            check(app.importEnd == app.recordedFrames && app.tape.revision() == revision, "Microphone recording opens the trim flow without touching the tape");
+            app.cancel(); check(app.mode == MainActivity.Mode.ADD_SAMPLE && app.selection == 0, "Leaving the microphone trim returns to Add sample");
+            app.mode = MainActivity.Mode.HOME;
+        });
         File export = new File(getTargetContext().getCacheDir(), "export.wav"); try (FileOutputStream out = new FileOutputStream(export)) { app.tape.export(out); }
         check(export.length() == 1_920_044, "Export stays one twenty-second WAV");
         check(SampleDecoder.decode(getTargetContext(), Uri.fromFile(export)).length == Tape.LENGTH, "Export reimports through Android decoding");
@@ -1047,7 +1054,7 @@ public final class DeviceChecks extends Instrumentation {
             app.sequencer.stop(); app.importSource = new SampleDecoder.Source(Uri.EMPTY, wave); app.imported = new short[Tape.RATE * 5]; app.importWave = wave;
             app.importName = "Very long imported sample name with Unicode ☾ and extra characters that must be clipped safely.wav";
             app.importStart = Tape.RATE * 70L; app.importEnd = Tape.RATE * 75L; app.start = Tape.RATE * 18; app.end = Tape.LENGTH; app.cursor = Tape.LENGTH;
-            app.recordStart = Tape.RATE * 19; app.recordPosition = Tape.LENGTH; app.stepTarget = -1;
+            app.recordedFrames = Tape.LENGTH; app.stepTarget = -1;
             app.effectGroup = -1;
             for (int group = 0; group < Sequencer.Effects.GROUPS; group++) app.sequencer.tracks[0].power(group, true);
             for (int[] size : new int[][]{{320, 640}, {360, 800}, {400, 880}, {1080, 2400}}) {

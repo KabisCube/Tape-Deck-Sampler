@@ -47,6 +47,7 @@ class Sequencer(private val tape: Tape) {
         @JvmField var robotMix = 0
         @JvmField var chance = 100
         @JvmField var every = 1
+        @JvmField var everyPass = 1
         @JvmField var wobbleMode = 0
         @JvmField var wobbleRate = DEFAULT_WOBBLE_RATE
         @JvmField var wobbleDepth = 0
@@ -77,7 +78,7 @@ class Sequencer(private val tape: Tape) {
                 SWING -> swingOverride == other.swingOverride
                 NUDGE -> nudge == other.nudge
                 CHANCE -> chance == other.chance
-                EVERY -> every == other.every
+                EVERY -> every == other.every && everyPass == other.everyPass
                 WOBBLE -> wobbleMode == other.wobbleMode && wobbleRate == other.wobbleRate && wobbleDepth == other.wobbleDepth
                 SHIFT -> trimStart == other.trimStart && trimEnd == other.trimEnd
                 CHOIR -> choirCopies == other.choirCopies && choirDetune == other.choirDetune && choirOffset == other.choirOffset
@@ -217,12 +218,23 @@ class Sequencer(private val tape: Tape) {
                     ENVELOPE -> if (attack == 0 && decay == 0 && sustain == 100 && release == 0) release = ON_RELEASE_MS
                     REVERB -> if (reverb == 0) reverb = ON_REVERB
                     CHANCE -> if (chance == 100) chance = ON_CHANCE
-                    EVERY -> if (every == 1) every = ON_EVERY
+                    EVERY -> if (every == 1) changeEvery(ON_EVERY)
                     WOBBLE -> if (wobbleDepth == 0) wobbleDepth = ON_WOBBLE_DEPTH
                 }
             }
             effectPowerSet = effectPowerSet or bit
             effectPower = if (enabled) effectPower or bit else effectPower and bit.inv()
+        }
+
+        fun changeEvery(value: Int) {
+            val wasLastPass = everyPass >= every
+            every = value
+            everyPass = if (wasLastPass) every else everyPass.coerceIn(1, every)
+        }
+
+        fun playsOnPass(pass: Int): Boolean {
+            val cycle = maxOf(1, every)
+            return pass % cycle == everyPass % cycle
         }
 
         fun wobbles(): Boolean = powered(WOBBLE) && wobbleDepth > 0
@@ -250,7 +262,7 @@ class Sequencer(private val tape: Tape) {
                 SWING -> swingOverride = 0
                 NUDGE -> nudge = 0
                 CHANCE -> chance = 100
-                EVERY -> every = 1
+                EVERY -> { every = 1; everyPass = 1 }
                 WOBBLE -> { wobbleMode = 0; wobbleRate = DEFAULT_WOBBLE_RATE; wobbleDepth = 0 }
                 SHIFT -> { trimStart = 0; trimEnd = 0; prepared = null }
                 REVERSE -> prepared = null
@@ -285,7 +297,7 @@ class Sequencer(private val tape: Tape) {
                 SWING -> swingOverride = source.swingOverride
                 NUDGE -> nudge = source.nudge
                 CHANCE -> chance = source.chance
-                EVERY -> every = source.every
+                EVERY -> { every = source.every; everyPass = source.everyPass }
                 WOBBLE -> { wobbleMode = source.wobbleMode; wobbleRate = source.wobbleRate; wobbleDepth = source.wobbleDepth }
                 SHIFT -> { trimStart = source.trimStart; trimEnd = source.trimEnd; prepared = null }
                 REVERSE -> prepared = null
@@ -315,7 +327,7 @@ class Sequencer(private val tape: Tape) {
             robotProfile = source.robotProfile; robotMorph = source.robotMorph; robotMix = source.robotMix
             effectPower = source.effectPower; effectPowerSet = source.effectPowerSet
             chain = source.chain; neutralGain = source.neutralGain
-            chance = source.chance; every = source.every
+            chance = source.chance; every = source.every; everyPass = source.everyPass
             wobbleMode = source.wobbleMode; wobbleRate = source.wobbleRate; wobbleDepth = source.wobbleDepth
             trimStart = source.trimStart; trimEnd = source.trimEnd
             choirCopies = source.choirCopies; choirDetune = source.choirDetune; choirOffset = source.choirOffset
@@ -1008,10 +1020,9 @@ class Sequencer(private val tape: Tape) {
         return result
     }
 
-    private fun conditionsPass(page: Page, index: Int, pad: Int, tick: Long): Boolean {
+    private fun conditionsPass(page: Page, index: Int, pad: Int, pass: Int, tick: Long): Boolean {
         val controls = page.padEffects[index][pad] ?: trackControls(page, index)
-        val pass = ++page.passes[index][pad]
-        return pass % maxOf(1, controls.every) == 0 && rolled(tick, index, pad, controls.chance)
+        return controls.playsOnPass(pass) && rolled(tick, index, pad, controls.chance)
     }
 
     private fun timingTick(timing: Effects, time: Long, elapsed: Double, pairLength: Double): Long {
@@ -1044,7 +1055,10 @@ class Sequencer(private val tape: Tape) {
                 if (tick < firstTrackTick || tick >= sequenceTickLimit || tick <= pageTicks[index][page]) continue
                 pageTicks[index][page] = tick
                 val pad = Math.floorMod(tick, STEPS.toLong()).toInt()
-                if (pages[page].enabled && (pages[page].steps[index] and (1 shl pad)) != 0 && conditionsPass(pages[page], index, pad, tick) && !tracks[index].mute) trigger(index, pad, page)
+                val scheduled = pages[page]
+                if (!scheduled.enabled) continue
+                val pass = ++scheduled.passes[index][pad]
+                if ((scheduled.steps[index] and (1 shl pad)) != 0 && conditionsPass(scheduled, index, pad, pass, tick) && !tracks[index].mute) trigger(index, pad, page)
             }
         }
     }

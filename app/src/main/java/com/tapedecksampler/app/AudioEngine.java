@@ -7,13 +7,13 @@ import android.media.AudioTrack;
 import android.media.AudioTimestamp;
 import android.media.MediaRecorder;
 import android.os.Process;
+import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AudioEngine {
     public interface Listener {
-        void recorded(int position);
-        void recordingStarted();
+        void recorded(int frames);
         void finished(String error);
         void audioError(String error);
     }
@@ -29,7 +29,6 @@ public final class AudioEngine {
     private static final long JOIN_TIMEOUT_MS = 1500;
 
     private final Sequencer sequencer;
-    private final Tape tape;
     private final Listener listener;
     private volatile boolean active;
     private volatile ClapClock clapClock;
@@ -37,9 +36,8 @@ public final class AudioEngine {
     private Thread outputThread;
     private Thread inputThread;
 
-    public AudioEngine(Sequencer sequencer, Tape tape, Listener listener) {
+    public AudioEngine(Sequencer sequencer, Listener listener) {
         this.sequencer = sequencer;
-        this.tape = tape;
         this.listener = listener;
     }
 
@@ -109,29 +107,25 @@ public final class AudioEngine {
 
     public boolean isRecording() { return recording.get(); }
 
-    public void record(int start) {
+    public void record(File destination) {
         if (!recording.compareAndSet(false, true)) return;
         sequencer.stop();
         inputThread = new Thread(() -> {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
             AudioRecord input = null;
             String error = null;
-            int position = start;
-            try {
+            try (CaptureFile capture = new CaptureFile(destination)) {
                 int minimum = AudioRecord.getMinBufferSize(Tape.RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 input = new AudioRecord(MediaRecorder.AudioSource.MIC, Tape.RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(MIN_INPUT_BUFFER_BYTES, minimum));
                 if (input.getState() != AudioRecord.STATE_INITIALIZED) throw new IOException("Microphone unavailable");
                 input.startRecording();
-                tape.checkpoint();
-                listener.recordingStarted();
                 short[] block = new short[INPUT_BLOCK_FRAMES];
-                while (recording.get() && position < Tape.LENGTH) {
-                    int count = input.read(block, 0, Math.min(block.length, Tape.LENGTH - position), AudioRecord.READ_BLOCKING);
+                while (recording.get() && capture.frames() < Tape.LENGTH) {
+                    int count = input.read(block, 0, block.length, AudioRecord.READ_BLOCKING);
                     if (count <= 0) throw new IOException("Microphone disconnected");
-                    position += tape.write(position, block, count);
-                    listener.recorded(position);
+                    capture.write(block, count);
+                    listener.recorded(capture.frames());
                 }
-                tape.flush();
             } catch (SecurityException e) {
                 error = "Microphone permission was revoked";
             } catch (Exception e) {

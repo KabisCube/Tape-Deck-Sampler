@@ -5,11 +5,13 @@
 
 # Tape Deck Sampler
 
-Is an easy to use Android sampler with eight-tracks, sixteen-step sequencer with up to 16 pages that share a 20 second, 48kHz mono WAV "Tape" for all the samples. 
+Is an easy to use Android sampler with eight-tracks, sixteen-step sequencer with up to 16 pages.
+Each project and its samples are stored on digital 48kHz mono cassette tape with a 20 second sample limit.
 
-Record from your mic, another app, or load samples directly and slice them into your 20 second sample tape.
+Record samples from the mic, another app, or load samples directly and slice them into your 20 second sample tape.
 
-Tape Deck Sampler supports Project, MIDI and WAV exports.
+Start a jam session with a literal clap with no network or password requirements.
+
 
 ## Download
 
@@ -18,8 +20,7 @@ Tape Deck Sampler supports Project, MIDI and WAV exports.
 
 ## Clap & Sync
 
-Starting a jam is as simple as it should be.
-Set the same **Tempo** on every device. Select **Sync** and just Clap once when all devices are ready. No network settings or passwords needed.
+Set the same **Tempo** on every device. Select **Sync** and just Clap once when all devices are ready. No network or passwords needed.
 
 Devices can pause and play individually. When pressing **Play** a small delay will occur to get your device back in sync.
 If you want to change the BPM, just change it on all devices at any time.
@@ -28,26 +29,27 @@ If another device wants to join, just Resync the devices, no data is lost.
 
 ## Recording and importing
 
-**Add sample > Record microphone** Simple mic recording. Select where on your main 20 second sample you want to start recording from, and start recording. The recording can then be trimmed before committing it to the main 20 second sample.
+**Record microphone** Simple mic recording using your device's microphone.
 
-**Add sample > Record device** captures audio from other apps on Android 10 or later. Start recording and switch to another app, play its audio, return and stop the recording. Recording can also be stopped through the notifications. The sample can then be trimmed and placed in your main 20 second sample.
-Android only permits capture from apps that allow it; so some sources may produce silence.
+**Record device** captures audio from other apps on Android 10 or later. To allow for sampling any audio on your device. Android only permits capture from apps that allow it; so some sources may produce silence.
 
-**Add sample > Import sample** Import any audio sample directly from your storage without needing to record anything. The sample can then be trimmed and placed into your main 20 second sample.
+**Import sample** Import any audio sample directly from your storage without needing to record anything. The sample can then be trimmed and placed into your main 20 second sample.
 
+**Text to speech** generates a sample using oldschool text to speach with 6 voices to pick from.
+
+**Synth tone** generates a tone with a simple synth.
 
 ## Project
 
-Every project is its own tape cassette with the samples and pad data stored on it.
+Every project is its own cassette tape with the samples and pad data stored on it.
 As you make changes, the tape automatically saves your changes live. 
 
 
 ## Export
-
-**Menu > Project > Export**, **As MIDI**, **As WAV** and **As Project**.
+Tape Deck Sampler can export:
+**As WAV** renders one pass through the enabled pages in numerical order, if the project use effects like Chance or Nth, it can use enough passes to reach every pad sound once: WAV exports are 48 kHz mono PCM16.
 **As MIDI** exports the enabled sequence pages and track timing.
-**As WAV** renders one pass through the enabled pages in numerical order, or if you use chance effects, it can use enough passes to reach every pad sound once: WAV exports are 48 kHz mono PCM16.
-**As Project** exports a `.tapedeck.zip` with the tape and all pad data so it can be imported on another device.
+**As Project** exports a `.tapedeck.zip` with the tape and all pad data so it can be shared with other devices.
 
 
 ## Building
@@ -102,7 +104,7 @@ Tape Deck Sampler is distributed in the hope that it will be useful, but WITHOUT
 
 ## Credits
 
-The Album Marker font (`app/src/main/assets/fonts/AlbumMarker01-Regular.ttf`) and the hatch and cassette sound effects (`app/src/main/assets/sounds/`) was made by KabisCube and licensed under the same GNU GPL v3-or-later license as the rest of this project.
+The Album Marker font (`app/src/main/assets/fonts/AlbumMarker01-Regular.ttf`) and the hatch and tape sound effects (`app/src/main/assets/sounds/`) was made by KabisCube and licensed under the same GNU GPL v3-or-later license as the rest of this project.
 
 Built with [Kotlin](https://kotlinlang.org/) by JetBrains. The Kotlin standard library is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 

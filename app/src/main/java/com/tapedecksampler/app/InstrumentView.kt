@@ -59,6 +59,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private val trackButtonShape = trackButtonShape()
     private val zoomArrow = Path()
     private val iconPath = Path()
+    private val moonOuter = Path()
+    private val moonInner = Path()
+    private var lineWeight = 1f
     private val zoomLight = buttonLight(0xc8efff)
     private val playLight = buttonLight(0xffb45a)
     private var splitGroup = -1
@@ -136,7 +139,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     private var waveStart = -1
     private var waveEnd = -1
     private var waveTape: Tape? = null
-    private var waveTime = 0L
     private var waveform: List<ColoredWaveform.Segment> = emptyList()
     private var waveRegions: SampleRegions? = null
     private var waveRegionsVersion = -1L
@@ -857,7 +859,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         Mode.HOME -> { val track = app.sequencer.tracks[app.track]; (track.start + track.end) / 2f / Tape.LENGTH }
         Mode.START -> app.start / Tape.LENGTH.toFloat()
         Mode.END -> app.end / Tape.LENGTH.toFloat()
-        Mode.RECORDING -> app.recordPosition / Tape.LENGTH.toFloat()
         Mode.IMPORT_START -> app.importSource?.let { app.importStart / it.frames.toFloat() } ?: 0f
         Mode.IMPORT_END -> app.importSource?.let { app.importEnd / it.frames.toFloat() } ?: 0f
         else -> app.cursor / Tape.LENGTH.toFloat()
@@ -1453,10 +1454,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             Mode.MENU -> menu(c, MainActivity.MENU)
             Mode.ADD_SAMPLE -> menu(c, MainActivity.ADD_SAMPLE)
             Mode.SPEECH, Mode.SPEECH_VOICE -> {
-                menu(c, if (app.mode == Mode.SPEECH) app.speechItems() else RetroSpeech.voices, rows = MENU_ROWS - 1)
+                menu(c, if (app.mode == Mode.SPEECH) app.speechItems() else RetroSpeech.voices, rows = MENU_ROWS - 1, fallbackIcon = MenuIcon.SPEECH)
                 text(c, String.format(Locale.US, "PLAY OR T%02d: PREVIEW", app.track + 1), LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
             }
             Mode.DEVICE_RECORD -> deviceRecording(c)
+            Mode.MIC_RECORD, Mode.RECORDING -> microphoneRecording(c)
             Mode.SYSTEM -> menu(c, app.systemItems())
             Mode.EXPORT -> menu(c, MainActivity.EXPORT_ITEMS)
             Mode.EXPORT_LOOPS -> {
@@ -1495,7 +1497,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 text(c, "SELECT: DELETE  RETURN: KEEP", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
             }
             Mode.EFFECTS -> if (app.effectGroup < 0) effectStack(c) else {
-                menu(c, app.effectItems(), EFFECT_COLORS[app.effectGroup], enabled = app::effectRowEnabled)
+                menu(c, app.effectItems(), EFFECT_COLORS[app.effectGroup], enabled = app::effectRowEnabled, parameters = MainActivity.FX_GROUP_PARAMETERS[app.effectGroup])
             }
             Mode.FX_ADD -> menu(c, app.addItems(), LCD, app.addGroups())
             Mode.FX_REORDER -> effectStack(c)
@@ -1510,7 +1512,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 if (app.shifting()) shiftTimeline(c, accent)
                 else {
                     value(c, MainActivity.FX_LABELS[app.effectParameter], app.effectDisplay(app.effectParameter, app.effectValue).uppercase(Locale.US), app.effectHint(app.effectParameter), accent)
-                    effectVisual(c, accent)
+                    effectVisual(c, accent, app.effectParameter, app.effectValue)
                 }
             }
             Mode.IMPORT_START, Mode.IMPORT_END -> sourceTimeline(c)
@@ -1632,18 +1634,317 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         text(c, MainActivity.seconds(track.start.toLong()) + " → " + MainActivity.seconds(track.end.toLong()) + " s", LCD_LEFT, LCD_HINT_Y, LCD_TITLE_TEXT, LCD, mono)
     }
 
-    private fun menu(c: Canvas, items: Array<String>, accent: Int = LCD, groups: IntArray? = null, enabled: ((Int) -> Boolean)? = null, rows: Int = MENU_ROWS) {
+    private fun menu(c: Canvas, items: Array<String>, accent: Int = LCD, groups: IntArray? = null, enabled: ((Int) -> Boolean)? = null, rows: Int = MENU_ROWS, fallbackIcon: MenuIcon? = null, parameters: IntArray? = null) {
         val first = max(0, min(app.selection - rows / 2, items.size - rows))
-        for (i in first until min(items.size, first + rows)) {
+        val last = min(items.size, first + rows)
+        val iconX = MENU_RIGHT - MENU_ICON_CELL / 2
+        val textLeft = MENU_LEFT + MENU_TEXT_INSET
+        val textRoom = MENU_RIGHT - MENU_ICON_CELL - textLeft
+        if (last < items.size) menuArrow(c, MENU_CENTER, MENU_TOP + (last - 1 - first) * MENU_PITCH + MENU_ROW_CENTER + MENU_ARROW_DROP, false, accent)
+        for (i in first until last) {
             val y = MENU_TOP + (i - first) * MENU_PITCH
+            if (i == first && first > 0) { menuArrow(c, MENU_CENTER, y + MENU_ROW_CENTER, true, accent); continue }
             val selected = i == app.selection
             val rowAccent = if (enabled?.invoke(i) == false) MENU_DISABLED else accent
-            val left = if (groups != null) STACK_LEFT else 34f
-            val right = if (groups != null) STACK_LEFT + STACK_WIDTH else 366f
-            if (selected) rect(c, left, y - 13, right, y + 4, if (groups != null) STACK_RADIUS else 1f, rowAccent)
-            text(c, (if (selected) "> " else "  ") + items[i], left + 5, y, 13f, if (selected) LCD_DARK else rowAccent, if (selected) monoBold else mono)
-            if (groups != null && i < groups.size) effectIcon(c, groups[i], right - STACK_CELL / 2, y - 4.5f, if (selected) LCD_DARK else EFFECT_COLORS[groups[i]], 0.75f)
+            if (selected) rect(c, MENU_LEFT, y - MENU_HIGHLIGHT_ABOVE, MENU_RIGHT, y + MENU_HIGHLIGHT_BELOW, STACK_RADIUS, rowAccent)
+            val font = if (selected) monoBold else mono
+            paint.typeface = font; paint.textSize = MENU_TEXT
+            val label = TextUtils.ellipsize("  " + items[i], paint, textRoom, TextUtils.TruncateAt.END).toString()
+            text(c, label, textLeft, y, MENU_TEXT, if (selected) LCD_DARK else rowAccent, font)
+            if (selected) chevron(c, textLeft + MENU_POINTER_X, y + MENU_ROW_CENTER, 1f, 0f, LCD_DARK)
+            val iconY = y + MENU_ROW_CENTER
+            if (groups != null && i < groups.size) effectIcon(c, groups[i], iconX, iconY, if (selected) LCD_DARK else EFFECT_COLORS[groups[i]], MENU_ICON_SCALE)
+            else if (parameters != null && i < parameters.size) parameterIcon(c, parameters[i], iconX, iconY, if (selected) LCD_DARK else rowAccent, if (selected) rowAccent else LCD_DARK)
+            else (menuIconFor(items[i]) ?: fallbackIcon)?.let { menuIcon(c, it, iconX, iconY, if (selected) LCD_DARK else rowAccent, MENU_ICON_SCALE) }
         }
+    }
+
+    private fun parameterIcon(c: Canvas, parameter: Int, x: Float, y: Float, color: Int, background: Int) {
+        val icon = PARAMETER_ICONS[parameter]
+        if (icon != null || !hasVisual(parameter)) { menuIcon(c, icon ?: MenuIcon.EFFECTS, x, y, color, MENU_ICON_SCALE); return }
+        val scale = min(VISUAL_ICON_WIDTH / (VISUAL_RIGHT - VISUAL_LEFT), VISUAL_ICON_HEIGHT / (VISUAL_BOTTOM - VISUAL_TOP))
+        c.save()
+        c.translate(x, y); c.scale(scale, scale); c.translate(-(VISUAL_LEFT + VISUAL_RIGHT) / 2, -(VISUAL_TOP + VISUAL_BOTTOM) / 2)
+        lineWeight = VISUAL_ICON_WEIGHT
+        effectVisual(c, color, parameter, app.effectSetting(parameter), background, asIcon = true)
+        lineWeight = 1f
+        c.restore()
+    }
+
+    private fun menuIconFor(item: String): MenuIcon? {
+        val head = item.substringBefore(" / ")
+        return MENU_ICONS[head] ?: MENU_ICON_PREFIXES.firstOrNull { head.startsWith(it.first) }?.second
+    }
+
+    private fun menuIcon(c: Canvas, icon: MenuIcon, x: Float, y: Float, color: Int, s: Float) {
+        paint.color = color; paint.style = Paint.Style.STROKE; paint.strokeWidth = 1.6f; paint.strokeCap = Paint.Cap.SQUARE
+        when (icon) {
+            MenuIcon.EFFECTS -> {
+                stroke(c, x, y, s, false, -5f, -7f, -5f, 7f)
+                stroke(c, x, y, s, false, 0f, -7f, 0f, 7f)
+                stroke(c, x, y, s, false, 5f, -7f, 5f, 7f)
+                stroke(c, x, y, s, false, -7.5f, 2f, -2.5f, 2f)
+                stroke(c, x, y, s, false, -2.5f, -3f, 2.5f, -3f)
+                stroke(c, x, y, s, false, 2.5f, 4f, 7.5f, 4f)
+            }
+            MenuIcon.ADD -> {
+                stroke(c, x, y, s, false, -7f, 0f, 7f, 0f)
+                stroke(c, x, y, s, false, 0f, -7f, 0f, 7f)
+            }
+            MenuIcon.TEMPO -> {
+                stroke(c, x, y, s, true, -6f, 7f, 6f, 7f, 3f, -7f, -3f, -7f)
+                stroke(c, x, y, s, false, 0f, 4f, 6f, -6f)
+            }
+            MenuIcon.SYNC -> {
+                stroke(c, x, y, s, false, -7f, -3f, 7f, -3f)
+                stroke(c, x, y, s, false, 4f, -6f, 7f, -3f, 4f, 0f)
+                stroke(c, x, y, s, false, 7f, 3f, -7f, 3f)
+                stroke(c, x, y, s, false, -4f, 0f, -7f, 3f, -4f, 6f)
+            }
+            MenuIcon.TAPE -> {
+                stroke(c, x, y, s, true, -8f, -6f, 8f, -6f, 8f, 6f, -8f, 6f)
+                stroke(c, x, y, s, false, -4f, 6f, -3f, 3f, 3f, 3f, 4f, 6f)
+                c.drawCircle(x - 3.5f * s, y - 1.5f * s, 2f * s, paint)
+                c.drawCircle(x + 3.5f * s, y - 1.5f * s, 2f * s, paint)
+            }
+            MenuIcon.GEAR -> {
+                c.drawCircle(x, y, 4f * s, paint)
+                for (spoke in 0 until GEAR_SPOKES) {
+                    val angle = spoke * 2 * PI / GEAR_SPOKES
+                    val dx = cos(angle).toFloat(); val dy = sin(angle).toFloat()
+                    stroke(c, x, y, s, false, dx * 5.5f, dy * 5.5f, dx * 8f, dy * 8f)
+                }
+            }
+            MenuIcon.FLIP -> {
+                stroke(c, x, y, s, false, -5f, 7f, -5f, -3f, -3f, -6f, 3f, -6f, 5f, -3f, 5f, 4f)
+                stroke(c, x, y, s, false, 2f, 1f, 5f, 4f, 8f, 1f)
+            }
+            MenuIcon.MIC -> {
+                stroke(c, x, y, s, true, -3f, -8f, 3f, -8f, 3f, 1f, -3f, 1f)
+                stroke(c, x, y, s, false, -6f, -2f, -6f, 1f, -3f, 4.5f, 3f, 4.5f, 6f, 1f, 6f, -2f)
+                stroke(c, x, y, s, false, 0f, 4.5f, 0f, 8f)
+                stroke(c, x, y, s, false, -4f, 8f, 4f, 8f)
+            }
+            MenuIcon.DEVICE -> {
+                stroke(c, x, y, s, true, -5f, -8f, 5f, -8f, 5f, 8f, -5f, 8f)
+                stroke(c, x, y, s, false, -3f, 0f, -1.5f, -3f, 0f, 3f, 1.5f, -3f, 3f, 0f)
+            }
+            MenuIcon.IMPORT -> {
+                stroke(c, x, y, s, false, 0f, -8f, 0f, 3f)
+                stroke(c, x, y, s, false, -4f, -1f, 0f, 3f, 4f, -1f)
+                stroke(c, x, y, s, false, -7f, 2f, -7f, 7f, 7f, 7f, 7f, 2f)
+            }
+            MenuIcon.EXPORT -> {
+                stroke(c, x, y, s, false, 0f, 3f, 0f, -8f)
+                stroke(c, x, y, s, false, -4f, -4f, 0f, -8f, 4f, -4f)
+                stroke(c, x, y, s, false, -7f, 2f, -7f, 7f, 7f, 7f, 7f, 2f)
+            }
+            MenuIcon.SPEECH -> stroke(c, x, y, s, true, -8f, -6f, 8f, -6f, 8f, 3f, -2f, 3f, -6f, 7f, -5f, 3f, -8f, 3f)
+            MenuIcon.WAVE -> stroke(c, x, y, s, false, -8f, 0f, -6.5f, -4.5f, -4f, -6f, -1.5f, -4.5f, 0f, 0f, 1.5f, 4.5f, 4f, 6f, 6.5f, 4.5f, 8f, 0f)
+            MenuIcon.NOTE -> {
+                stroke(c, x, y, s, false, 2f, 4f, 2f, -7f, 6f, -4f, 6f, -1f)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(x - 1f * s, y + 4.5f * s, 3f * s, paint)
+            }
+            MenuIcon.WAVEFORM -> for ((index, height) in WAVEFORM_BARS.withIndex()) {
+                val barX = (index - WAVEFORM_BARS.size / 2) * 3.5f
+                stroke(c, x, y, s, false, barX, -height, barX, height)
+            }
+            MenuIcon.LOOP -> {
+                c.drawCircle(x, y, 6f * s, paint)
+                stroke(c, x, y, s, false, -2f, -9f, 1f, -6f, -2f, -3f)
+            }
+            MenuIcon.GRID -> {
+                stroke(c, x, y, s, true, -7f, -7f, -1f, -7f, -1f, -1f, -7f, -1f)
+                stroke(c, x, y, s, true, 1f, -7f, 7f, -7f, 7f, -1f, 1f, -1f)
+                stroke(c, x, y, s, true, -7f, 1f, -1f, 1f, -1f, 7f, -7f, 7f)
+                stroke(c, x, y, s, true, 1f, 1f, 7f, 1f, 7f, 7f, 1f, 7f)
+            }
+            MenuIcon.OPEN -> stroke(c, x, y, s, true, -8f, -6f, -3f, -6f, -1f, -4f, 8f, -4f, 8f, 7f, -8f, 7f)
+            MenuIcon.NAME -> {
+                stroke(c, x, y, s, true, -7f, 7f, -7f, 3f, 4f, -8f, 8f, -4f, -3f, 7f)
+                stroke(c, x, y, s, false, 1f, -5f, 5f, -1f)
+            }
+            MenuIcon.COLOR -> {
+                c.drawCircle(x, y, 7f * s, paint)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(x - 3f * s, y - 2f * s, 1.4f * s, paint)
+                c.drawCircle(x + 2f * s, y - 3.5f * s, 1.4f * s, paint)
+                c.drawCircle(x + 3f * s, y + 2f * s, 1.4f * s, paint)
+            }
+            MenuIcon.DELETE -> {
+                stroke(c, x, y, s, false, -7f, -5f, 7f, -5f)
+                stroke(c, x, y, s, false, -2f, -5f, -2f, -7.5f, 2f, -7.5f, 2f, -5f)
+                stroke(c, x, y, s, false, -5f, -5f, -4f, 7f, 4f, 7f, 5f, -5f)
+                stroke(c, x, y, s, false, -1.5f, -2f, -1.5f, 4f)
+                stroke(c, x, y, s, false, 1.5f, -2f, 1.5f, 4f)
+            }
+            MenuIcon.OFF -> {
+                c.drawArc(x - 6.5f * s, y - 5.5f * s, x + 6.5f * s, y + 7.5f * s, POWER_ARC_START, POWER_ARC_SWEEP, false, paint)
+                stroke(c, x, y, s, false, 0f, -8f, 0f, 0f)
+            }
+            MenuIcon.RESET -> {
+                c.drawArc(x - 6.5f * s, y - 6.5f * s, x + 6.5f * s, y + 6.5f * s, POWER_ARC_START, POWER_ARC_SWEEP, false, paint)
+                stroke(c, x, y, s, false, -7f, -6f, -3f, -5.5f, -3f, -9.5f)
+            }
+            MenuIcon.VIBRATE -> {
+                stroke(c, x, y, s, true, -3f, -6f, 3f, -6f, 3f, 6f, -3f, 6f)
+                stroke(c, x, y, s, false, -5.5f, -3f, -5.5f, 3f)
+                stroke(c, x, y, s, false, -8f, -1.5f, -8f, 1.5f)
+                stroke(c, x, y, s, false, 5.5f, -3f, 5.5f, 3f)
+                stroke(c, x, y, s, false, 8f, -1.5f, 8f, 1.5f)
+            }
+            MenuIcon.WHEEL -> {
+                c.drawCircle(x, y, 7f * s, paint)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(x + 3f * s, y - 3f * s, 1.6f * s, paint)
+            }
+            MenuIcon.SPEAKER -> {
+                stroke(c, x, y, s, true, -8f, -3f, -4f, -3f, 1f, -7f, 1f, 7f, -4f, 3f, -8f, 3f)
+                stroke(c, x, y, s, false, 4f, -3f, 5f, 0f, 4f, 3f)
+                stroke(c, x, y, s, false, 6.5f, -6f, 8f, 0f, 6.5f, 6f)
+            }
+            MenuIcon.MOON -> {
+                moonOuter.reset(); moonOuter.addCircle(x, y, 7f * s, Path.Direction.CW)
+                moonInner.reset(); moonInner.addCircle(x + 4f * s, y - 3f * s, 6f * s, Path.Direction.CW)
+                moonOuter.op(moonInner, Path.Op.DIFFERENCE)
+                c.drawPath(moonOuter, paint)
+            }
+            MenuIcon.MIRROR -> {
+                stroke(c, x, y, s, true, -2f, -6f, -2f, 6f, -8f, 6f)
+                stroke(c, x, y, s, true, 2f, -6f, 2f, 6f, 8f, 6f)
+            }
+            MenuIcon.BATTERY -> {
+                stroke(c, x, y, s, true, -8f, -4f, 6f, -4f, 6f, 4f, -8f, 4f)
+                stroke(c, x, y, s, true, 6f, -2f, 8f, -2f, 8f, 2f, 6f, 2f)
+                paint.style = Paint.Style.FILL
+                c.drawRect(x - 6f * s, y - 2f * s, x, y + 2f * s, paint)
+            }
+            MenuIcon.STAR -> stroke(c, x, y, s, true, 0f, -8f, 2f, -3f, 8f, -3f, 3f, 1f, 5f, 7f, 0f, 3.5f, -5f, 7f, -3f, 1f, -8f, -3f, -2f, -3f)
+            MenuIcon.COPY -> {
+                stroke(c, x, y, s, true, -7f, -7f, 3f, -7f, 3f, 3f, -7f, 3f)
+                stroke(c, x, y, s, false, -3f, 3f, -3f, 7f, 7f, 7f, 7f, -3f, 3f, -3f)
+            }
+            MenuIcon.STACK -> {
+                stroke(c, x, y, s, true, -7f, -7f, 7f, -7f, 7f, -4f, -7f, -4f)
+                stroke(c, x, y, s, true, -7f, -1.5f, 7f, -1.5f, 7f, 1.5f, -7f, 1.5f)
+                stroke(c, x, y, s, true, -7f, 4f, 7f, 4f, 7f, 7f, -7f, 7f)
+            }
+            MenuIcon.PASTE -> {
+                stroke(c, x, y, s, true, -6f, -6f, 6f, -6f, 6f, 8f, -6f, 8f)
+                stroke(c, x, y, s, true, -3f, -8f, 3f, -8f, 3f, -5f, -3f, -5f)
+                stroke(c, x, y, s, false, -3f, 0f, 3f, 0f)
+                stroke(c, x, y, s, false, -3f, 4f, 3f, 4f)
+            }
+            MenuIcon.ORDER -> {
+                stroke(c, x, y, s, false, -3f, 7f, -3f, -7f)
+                stroke(c, x, y, s, false, -6f, -4f, -3f, -7f, 0f, -4f)
+                stroke(c, x, y, s, false, 3f, -7f, 3f, 7f)
+                stroke(c, x, y, s, false, 0f, 4f, 3f, 7f, 6f, 4f)
+            }
+            MenuIcon.CHECK -> stroke(c, x, y, s, false, -7f, 0f, -2f, 5f, 7f, -5f)
+            MenuIcon.LENGTH -> {
+                stroke(c, x, y, s, false, -8f, 0f, 8f, 0f)
+                stroke(c, x, y, s, false, -5f, -3f, -8f, 0f, -5f, 3f)
+                stroke(c, x, y, s, false, 5f, -3f, 8f, 0f, 5f, 3f)
+            }
+            MenuIcon.ATTACK -> stroke(c, x, y, s, false, -8f, 6f, 0f, -6f, 8f, -6f)
+            MenuIcon.RELEASE -> stroke(c, x, y, s, false, -8f, -6f, 0f, -6f, 8f, 6f)
+            MenuIcon.SWEEP -> {
+                stroke(c, x, y, s, false, -7f, 6f, 6f, -7f)
+                stroke(c, x, y, s, false, 0f, -7f, 6f, -7f, 6f, -1f)
+            }
+            MenuIcon.PLAY -> stroke(c, x, y, s, true, -5f, -7f, 7f, 0f, -5f, 7f)
+            MenuIcon.PAUSE -> {
+                stroke(c, x, y, s, false, -3f, -7f, -3f, 7f)
+                stroke(c, x, y, s, false, 3f, -7f, 3f, 7f)
+            }
+            MenuIcon.SWING -> effectIcon(c, Sequencer.Effects.SWING, x, y, color, s)
+            MenuIcon.SPEED -> effectIcon(c, Sequencer.Effects.SAMPLE, x, y, color, s)
+            MenuIcon.NUDGE -> effectIcon(c, Sequencer.Effects.NUDGE, x, y, color, s)
+            MenuIcon.WOBBLE -> effectIcon(c, Sequencer.Effects.WOBBLE, x, y, color, s)
+            MenuIcon.MIX -> {
+                c.drawCircle(x, y, 7f * s, paint)
+                paint.style = Paint.Style.FILL
+                c.drawArc(x - 7f * s, y - 7f * s, x + 7f * s, y + 7f * s, HALF_TURN / 2, HALF_TURN, true, paint)
+            }
+            MenuIcon.CLOCK -> {
+                c.drawCircle(x, y, 7f * s, paint)
+                stroke(c, x, y, s, false, 0f, -4.5f, 0f, 0f, 3.5f, 0f)
+            }
+            MenuIcon.RESONANCE -> stroke(c, x, y, s, false, -8f, 0f, -3f, 0f, -1f, -3f, 1f, -7f, 3f, -2f, 5f, 5f, 8f, 7f)
+            MenuIcon.DRIVE -> {
+                c.drawArc(x - 7f * s, y - 4f * s, x + 7f * s, y + 10f * s, HALF_TURN, HALF_TURN, false, paint)
+                stroke(c, x, y, s, false, 0f, 3f, 5f, -3f)
+            }
+            MenuIcon.BITS -> stroke(c, x, y, s, false, -8f, 7f, -4f, 7f, -4f, 3f, 0f, 3f, 0f, -1f, 4f, -1f, 4f, -5f, 8f, -5f)
+            MenuIcon.SCALE -> for ((index, height) in SCALE_NOTES.withIndex()) {
+                val noteX = (index - SCALE_NOTES.size / 2) * 5f
+                stroke(c, x, y, s, false, noteX + 2f, height, noteX + 2f, height - 6f)
+                paint.style = Paint.Style.FILL
+                c.drawCircle(x + noteX * s, y + height * s, 2f * s, paint)
+                paint.style = Paint.Style.STROKE
+            }
+            MenuIcon.MORPH -> stroke(c, x, y, s, false, -8f, 6f, -6f, -2f, -4f, -5f, -2f, -2f, 0f, 4f, 2f, 0f, 4f, -2f, 6f, 1f, 8f, 6f)
+            MenuIcon.DEPTH -> {
+                stroke(c, x, y, s, false, 0f, -8f, 0f, 8f)
+                stroke(c, x, y, s, false, -3f, -5f, 0f, -8f, 3f, -5f)
+                stroke(c, x, y, s, false, -3f, 5f, 0f, 8f, 3f, 5f)
+                stroke(c, x, y, s, false, -8f, 0f, -4f, 0f)
+                stroke(c, x, y, s, false, 4f, 0f, 8f, 0f)
+            }
+            MenuIcon.DETUNE -> {
+                stroke(c, x, y, s, false, -8f, 0f, 8f, -6f)
+                stroke(c, x, y, s, false, -8f, 0f, 8f, 0f)
+                stroke(c, x, y, s, false, -8f, 0f, 8f, 6f)
+            }
+            MenuIcon.OFFSET -> {
+                stroke(c, x, y, s, false, -8f, -5f, 2f, -5f)
+                stroke(c, x, y, s, false, -5f, 0f, 5f, 0f)
+                stroke(c, x, y, s, false, -2f, 5f, 8f, 5f)
+            }
+            MenuIcon.TRIM_START -> {
+                stroke(c, x, y, s, false, -3f, -7f, -6f, -7f, -6f, 7f, -3f, 7f)
+                stroke(c, x, y, s, false, -2f, 0f, 7f, 0f)
+                stroke(c, x, y, s, false, 4f, -3f, 7f, 0f, 4f, 3f)
+            }
+            MenuIcon.TRIM_END -> {
+                stroke(c, x, y, s, false, 3f, -7f, 6f, -7f, 6f, 7f, 3f, 7f)
+                stroke(c, x, y, s, false, 2f, 0f, -7f, 0f)
+                stroke(c, x, y, s, false, -4f, -3f, -7f, 0f, -4f, 3f)
+            }
+            MenuIcon.KEYS -> {
+                stroke(c, x, y, s, true, -8f, -6f, 8f, -6f, 8f, 6f, -8f, 6f)
+                stroke(c, x, y, s, false, -2.7f, 0f, -2.7f, 6f)
+                stroke(c, x, y, s, false, 2.7f, 0f, 2.7f, 6f)
+                paint.style = Paint.Style.FILL
+                c.drawRect(x - 4.5f * s, y - 6f * s, x - 1f * s, y, paint)
+                c.drawRect(x + 1f * s, y - 6f * s, x + 4.5f * s, y, paint)
+                paint.style = Paint.Style.STROKE
+            }
+            MenuIcon.PICK_PASS -> {
+                stroke(c, x, y, s, false, 0f, -8f, 0f, -1f)
+                stroke(c, x, y, s, false, -3f, -4f, 0f, -1f, 3f, -4f)
+                stroke(c, x, y, s, false, -8f, 5f, -4.5f, 5f)
+                stroke(c, x, y, s, false, 4.5f, 5f, 8f, 5f)
+                paint.style = Paint.Style.FILL
+                c.drawRect(x - 2.5f * s, y + 2.5f * s, x + 2.5f * s, y + 7.5f * s, paint)
+                paint.style = Paint.Style.STROKE
+            }
+            MenuIcon.DECAY -> stroke(c, x, y, s, false, -8f, 6f, -6f, -6f, 0f, 2f, 8f, 2f)
+            MenuIcon.SUSTAIN -> stroke(c, x, y, s, false, -8f, 6f, -6f, -4f, -4f, 0f, 4f, 0f, 7f, 6f)
+        }
+        paint.strokeCap = Paint.Cap.BUTT; paint.style = Paint.Style.FILL
+    }
+
+    private fun menuArrow(c: Canvas, x: Float, y: Float, up: Boolean, color: Int) = chevron(c, x, y, 0f, if (up) -1f else 1f, color)
+
+    private fun chevron(c: Canvas, x: Float, y: Float, pointX: Float, pointY: Float, color: Int) {
+        val half = MENU_ARROW_HEIGHT / 2
+        val tipX = x + pointX * half; val tipY = y + pointY * half
+        val baseX = x - pointX * half; val baseY = y - pointY * half
+        line(c, baseX - pointY * MENU_ARROW_HEIGHT, baseY - pointX * MENU_ARROW_HEIGHT, tipX, tipY, color, MENU_ARROW_STROKE)
+        line(c, baseX + pointY * MENU_ARROW_HEIGHT, baseY + pointX * MENU_ARROW_HEIGHT, tipX, tipY, color, MENU_ARROW_STROKE)
     }
 
     private fun effectStack(c: Canvas) {
@@ -1801,7 +2102,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun box(c: Canvas, left: Float, top: Float, right: Float, bottom: Float, color: Int, width: Float) {
-        paint.color = color; paint.style = Paint.Style.STROKE; paint.strokeWidth = width
+        paint.color = color; paint.style = Paint.Style.STROKE; paint.strokeWidth = width * lineWeight
         c.drawRoundRect(left, top, right, bottom, STACK_RADIUS, STACK_RADIUS, paint)
         paint.style = Paint.Style.FILL
     }
@@ -1919,13 +2220,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
     private fun hasVisual(parameter: Int) = parameter !in intArrayOf(MainActivity.FX_SPEED, MainActivity.FX_NUDGE, MainActivity.FX_TRIM_START, MainActivity.FX_TRIM_END, MainActivity.FX_WOBBLE_MODE)
 
-    private fun effectVisual(c: Canvas, accent: Int) {
-        val parameter = app.effectParameter
+    private fun effectVisual(c: Canvas, accent: Int, parameter: Int, value: Int, background: Int = LCD_DARK, asIcon: Boolean = false) {
         if (!hasVisual(parameter)) return
         val fx = app.effectControls()
         val l = VISUAL_LEFT; val r = VISUAL_RIGHT; val t = VISUAL_TOP; val b = VISUAL_BOTTOM
         val w = r - l; val h = b - t
-        val faint = tint(accent, LCD_DARK, 0.65f)
+        val faint = if (asIcon) Color.TRANSPARENT else tint(accent, background, 0.65f)
         paint.strokeCap = Paint.Cap.ROUND
         when (parameter) {
             MainActivity.FX_HIGH_PASS, MainActivity.FX_LOW_PASS, MainActivity.FX_BAND_PASS,
@@ -1939,7 +2239,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     val x = l + w * (ln(decade / 20f) / ln(1000f))
                     line(c, x, t, x, b, faint, 1f)
                 }
-                curve(c, accent, true) { u ->
+                curve(c, accent, !asIcon) { u ->
                     if (cutoff <= 0) 1f else {
                         val ratio = 20f * 1000f.pow(u) / cutoff
                         val gain = if (resonance == 0 && !band) {
@@ -2038,7 +2338,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                 curve(c, faint, false) { u -> 0.5f + 0.4f * sin(u * 4 * PI.toFloat()) }
                 curve(c, accent, false) { u -> 0.5f + 0.4f * sin(u * 4 * PI.toFloat() * shifted) }
             }
-            MainActivity.FX_AUTO_KEY, MainActivity.FX_AUTO_SCALE -> keyboard(c, fx.autoKey, fx.autoScale, accent, faint)
+            MainActivity.FX_AUTO_KEY, MainActivity.FX_AUTO_SCALE -> keyboard(c, fx.autoKey, fx.autoScale, accent, faint, background)
             MainActivity.FX_AUTO_STRENGTH, MainActivity.FX_AUTO_RETUNE, MainActivity.FX_AUTO_MIX -> {
                 for (k in 0..3) line(c, l, t + h * k / 3f, r, t + h * k / 3f, faint, 0.6f)
                 val sung = { u: Float -> 0.6f + 1.9f * u + 0.28f * sin(u * 6 * PI.toFloat()) }
@@ -2075,18 +2375,18 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     circle(c, x, y, 4.5f, if (order.indexOf(i) < lit) accent else faint)
                 }
             }
-            MainActivity.FX_EVERY -> {
+            MainActivity.FX_EVERY, MainActivity.FX_EVERY_PASS -> {
                 val cells = 8
                 val y0 = (t + b) / 2 - 8; val y1 = (t + b) / 2 + 8
                 for (i in 0 until cells) {
                     val x0 = l + w * i / cells + 1.5f; val x1 = l + w * (i + 1) / cells - 1.5f
-                    if ((i + 1) % max(1, fx.every) == 0) rect(c, x0, y0, x1, y1, 2f, accent) else box(c, x0, y0, x1, y1, faint, 1f)
+                    if (fx.playsOnPass(i + 1)) rect(c, x0, y0, x1, y1, 2f, accent) else box(c, x0, y0, x1, y1, faint, 1f)
                 }
             }
             MainActivity.FX_SWING -> {
                 val pair = w / 4
                 for (i in 0 until 8) {
-                    val x = l + 3 + pair * (i / 2) + if (i % 2 == 0) 0f else pair * app.effectValue / 100f
+                    val x = l + 3 + pair * (i / 2) + if (i % 2 == 0) 0f else pair * value / 100f
                     line(c, x, b, x, if (i % 2 == 0) t + 6 else t + h * 0.45f, if (i % 2 == 0) faint else accent, 3f)
                 }
             }
@@ -2101,12 +2401,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
                     val bend = Math.copySign(Math.pow(abs(cents), 0.35), cents).toFloat()
                     val y = middle - bend * h / 2
                     val x = l + w * shift * 0.5f
-                    line(c, x, y, min(r, x + w * 0.5f), y, if (copy % 2 == 0) accent else tint(accent, LCD_DARK, 0.35f), 2f)
+                    line(c, x, y, min(r, x + w * 0.5f), y, if (copy % 2 == 0 || asIcon) accent else tint(accent, LCD_DARK, 0.35f), 2f)
                 }
             }
             MainActivity.FX_VOLUME -> {
                 rect(c, l, b - 10, r, b, 2f, faint)
-                rect(c, l, b - 10, l + w * app.effectValue / 100f, b, 2f, accent)
+                rect(c, l, b - 10, l + w * value / 100f, b, 2f, accent)
             }
         }
         paint.strokeCap = Paint.Cap.BUTT; paint.style = Paint.Style.FILL
@@ -2165,12 +2465,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun stroke(c: Canvas, path: Path, color: Int, width: Float) {
-        paint.color = color; paint.strokeWidth = width; paint.style = Paint.Style.STROKE; paint.strokeJoin = Paint.Join.ROUND
+        paint.color = color; paint.strokeWidth = width * lineWeight; paint.style = Paint.Style.STROKE; paint.strokeJoin = Paint.Join.ROUND
         c.drawPath(path, paint)
         paint.style = Paint.Style.FILL
     }
 
-    private fun keyboard(c: Canvas, key: Int, scale: Int, accent: Int, faint: Int) {
+    private fun keyboard(c: Canvas, key: Int, scale: Int, accent: Int, faint: Int, background: Int) {
         val whites = intArrayOf(0, 2, 4, 5, 7, 9, 11)
         val blacks = intArrayOf(1, 3, -1, 6, 8, 10)
         val l = VISUAL_LEFT; val t = VISUAL_TOP; val b = VISUAL_BOTTOM
@@ -2180,16 +2480,16 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             val note = whites[i]
             val x0 = l + keyWidth * i + 1; val x1 = l + keyWidth * (i + 1) - 1
             if (inScale(note)) rect(c, x0, t, x1, b, 2f, accent) else box(c, x0, t, x1, b, faint, 1f)
-            if (note == key) circle(c, (x0 + x1) / 2, b - 7, 3f, LCD_DARK)
+            if (note == key) circle(c, (x0 + x1) / 2, b - 7, 3f, background)
         }
         for (i in blacks.indices) {
             val note = blacks[i]
             if (note < 0) continue
             val cx = l + keyWidth * (i + 1)
             val x0 = cx - keyWidth * 0.32f; val x1 = cx + keyWidth * 0.32f; val y1 = t + (b - t) * 0.58f
-            rect(c, x0 - 1.5f, t, x1 + 1.5f, y1 + 1.5f, 2f, LCD_DARK)
+            rect(c, x0 - 1.5f, t, x1 + 1.5f, y1 + 1.5f, 2f, background)
             if (inScale(note)) rect(c, x0, t, x1, y1, 2f, accent) else box(c, x0, t, x1, y1, faint, 1f)
-            if (note == key) circle(c, cx, y1 - 6, 2.5f, LCD_DARK)
+            if (note == key) circle(c, cx, y1 - 6, 2.5f, background)
         }
     }
 
@@ -2197,12 +2497,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         var a = app.start
         var b = app.end
         var position = app.cursor
-        when (app.mode) {
-            Mode.RECORD_POSITION -> { a = position; b = Tape.LENGTH }
-            Mode.RECORDING -> { a = app.recordStart; position = app.recordPosition; b = position }
-            Mode.IMPORT_POSITION -> { a = position; b = min(Tape.LENGTH, a + (app.imported?.size ?: 0)) }
-            else -> {}
-        }
+        if (app.mode == Mode.IMPORT_POSITION) { a = position; b = min(Tape.LENGTH, a + (app.imported?.size ?: 0)) }
         val span = app.timelineSpan().toInt()
         var from = max(0, min(Tape.LENGTH - span, position - span / 2))
         if (app.mode == Mode.START || app.mode == Mode.END) from = TimelineWindow.start(Tape.LENGTH.toLong(), span.toLong(), position.toLong(), a.toLong(), b.toLong()).toInt()
@@ -2275,9 +2570,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun wave(c: Canvas, windowStart: Int, windowEnd: Int, a: Int, b: Int, top: Float, bottom: Float) {
-        val now = SystemClock.uptimeMillis()
         val changed = waveVersion != app.waveVersion || waveRegions !== app.regions || waveRegionsVersion != app.regions.revision()
-        if (waveTape !== app.tape || waveStart != windowStart || waveEnd != windowEnd || (changed && (app.mode != Mode.RECORDING || now - waveTime > WAVE_REFRESH_MILLIS))) {
+        if (waveTape !== app.tape || waveStart != windowStart || waveEnd != windowEnd || changed) {
             val currentRegions = app.regions
             val regions: ArrayList<SampleRegions.Region>
             synchronized(currentRegions) { regions = currentRegions.snapshot(); waveRegionsVersion = currentRegions.revision() }
@@ -2287,7 +2581,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             waveVersion = app.waveVersion
             waveStart = windowStart
             waveEnd = windowEnd
-            waveTime = now
         }
         val left = WAVE_LEFT
         val width = WAVE_WIDTH
@@ -2324,7 +2617,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
             }
             c.restore()
         }
-        if (app.isTimelineMode()) selectionEdges(c, x1, x2, top, bottom, app.mode != Mode.END && app.mode != Mode.RECORDING)
+        if (app.isTimelineMode()) selectionEdges(c, x1, x2, top, bottom, app.mode != Mode.END)
         if (app.shifting()) selectionEdges(c, x1, x2, top, bottom, app.effectParameter == MainActivity.FX_TRIM_START)
         c.restore()
         text(c, axisTime(windowStart.toLong(), (windowEnd - windowStart).toLong()), left, bottom + 10, 7f, 0xff8e9e7c.toInt(), mono)
@@ -2351,7 +2644,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         }
         circle(c, WHEEL_X, WHEEL_Y + 4, WHEEL_SELECT_RADIUS + 1, 0xff171c17.toInt())
         circle(c, WHEEL_X, WHEEL_Y, WHEEL_SELECT_RADIUS, 0xffd2ad59.toInt())
-        val recordingScreen = app.mode == Mode.RECORD_POSITION || app.mode == Mode.RECORDING || app.mode == Mode.DEVICE_RECORD
+        val recordingScreen = app.mode == Mode.MIC_RECORD || app.mode == Mode.DEVICE_RECORD
         val stackPage = app.effectStackPage()
         val ordering = app.mode == Mode.FX_REORDER
         val held = app.effectHeld >= 0
@@ -2362,6 +2655,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         if (!zoomHolding) {
             val center = when {
                 app.mode == Mode.HOME -> "MENU"
+                app.recordingActive() -> "STOP"
                 recordingScreen -> "RECORD"
                 ordering -> if (held) "DROP" else if (selectedMovable()) "MOVE" else "LOCKED"
                 pages -> if (app.pageClipboard != null) "PASTE" else "OPEN"
@@ -2489,16 +2783,25 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun deviceRecording(c: Canvas) {
-        if (DeviceCaptureService.active()) {
-            text(c, "RECORDING DEVICE AUDIO", LCD_LEFT, LCD_TITLE_Y, 13f, ORANGE, monoBold)
-            text(c, MainActivity.seconds(DeviceCaptureService.frames().toLong()) + " s", LCD_LEFT, 139f, 25f, LCD, monoBold)
-            text(c, "SWITCH APPS TO RECORD / MAX ${Tape.SECONDS}s", LCD_LEFT, 176f - LOW_ROW, LCD_TEXT, LCD, mono)
-            text(c, "RECORD OR PLAY: STOP AND TRIM", LCD_LEFT, 207f - LOW_ROW, LCD_TEXT, LCD, mono)
-        } else {
-            text(c, "RECORD DEVICE", LCD_LEFT, LCD_TITLE_Y, 17f, LCD, monoBold)
-            wrapped(c, "Records the audio on your device, including other apps.", LCD_LEFT, 125f, 39, 11f, LCD)
-            text(c, "RECORD: START", LCD_LEFT, 207f - LOW_ROW, LCD_TEXT, LCD, mono)
-        }
+        if (DeviceCaptureService.active()) activeRecording(c, "RECORDING DEVICE AUDIO", DeviceCaptureService.frames())
+        else idleRecording(c, "RECORD DEVICE")
+    }
+
+    private fun microphoneRecording(c: Canvas) {
+        if (app.mode == Mode.RECORDING) activeRecording(c, "RECORDING MICROPHONE", app.recordedFrames)
+        else idleRecording(c, "RECORD MICROPHONE")
+    }
+
+    private fun activeRecording(c: Canvas, title: String, frames: Int) {
+        text(c, title, LCD_LEFT, LCD_TITLE_Y, 13f, ORANGE, monoBold)
+        val progress = String.format(Locale.US, "%.2f / %.2f seconds", frames / Tape.RATE.toDouble(), Tape.SECONDS.toDouble())
+        text(c, progress, LCD_LEFT, 139f, RECORD_PROMPT_TEXT, LCD, monoBold)
+        text(c, "STOP OR PLAY: STOP AND TRIM", LCD_LEFT, 207f - LOW_ROW, LCD_TEXT, LCD, mono)
+    }
+
+    private fun idleRecording(c: Canvas, title: String) {
+        text(c, title, LCD_LEFT, LCD_TITLE_Y, 17f, LCD, monoBold)
+        centeredText(c, "Press RECORD to start", (LCD_LEFT + LCD_RIGHT) / 2, RECORD_PROMPT_Y, RECORD_PROMPT_TEXT, LCD, monoBold)
     }
 
     private fun tracks(c: Canvas) {
@@ -2897,13 +3200,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
     }
 
     private fun line(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, color: Int, width: Float) {
-        paint.color = color; paint.strokeWidth = width; c.drawLine(x1, y1, x2, y2, paint)
+        paint.color = color; paint.strokeWidth = width * lineWeight; c.drawLine(x1, y1, x2, y2, paint)
     }
 
     private fun tint(color: Int, target: Int, amount: Float) = Color.rgb(
         (Color.red(color) * (1 - amount) + Color.red(target) * amount).roundToInt(),
         (Color.green(color) * (1 - amount) + Color.green(target) * amount).roundToInt(),
         (Color.blue(color) * (1 - amount) + Color.blue(target) * amount).roundToInt())
+
+    private enum class MenuIcon { EFFECTS, ADD, TEMPO, SYNC, TAPE, GEAR, FLIP, MIC, DEVICE, IMPORT, EXPORT, SPEECH, WAVE, NOTE, WAVEFORM, LOOP, GRID, OPEN, NAME, COLOR, DELETE, OFF, RESET, VIBRATE, WHEEL, SPEAKER, MOON, MIRROR, BATTERY, STAR, COPY, STACK, PASTE, ORDER, CHECK, LENGTH, ATTACK, RELEASE, SWEEP, PLAY, PAUSE, SWING, SPEED, NUDGE, WOBBLE, MIX, CLOCK, RESONANCE, DRIVE, BITS, SCALE, MORPH, DEPTH, DETUNE, OFFSET, TRIM_START, TRIM_END, DECAY, SUSTAIN, KEYS, PICK_PASS }
 
     companion object {
         private const val WHITE = 0xffffffff.toInt()
@@ -3052,6 +3357,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val LCD_LEFT = 36f
         private const val LCD_RIGHT = 363f
         private const val LCD_TITLE_Y = 96f
+        private const val RECORD_PROMPT_Y = 150f
+        private const val RECORD_PROMPT_TEXT = 22f
         private const val SCREEN_DROP = 20f
         private const val LOW_ROW = SCREEN_DROP - CONTENT_LIFT
         private const val LCD_VALUE_Y = 188f - LOW_ROW
@@ -3087,7 +3394,6 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val WAVE_LEFT = 37f
         private const val WAVE_WIDTH = 326f
         private const val WAVE_BINS = 160
-        private const val WAVE_REFRESH_MILLIS = 100
         private const val WAVE_HEIGHT = 0.46f
         private const val INCOMING_WAVE_HEIGHT = 0.44f
         private const val LONG_VALUE_CHARS = 7
@@ -3110,6 +3416,60 @@ class InstrumentView(private val app: MainActivity) : View(app) {
         private const val MENU_DISABLED = 0xff70766d.toInt()
         private const val MENU_TOP = 93f
         private const val MENU_PITCH = 20
+        private const val MENU_WIDTH = 224f
+        private const val MENU_CENTER = STACK_LEFT + STACK_WIDTH / 2
+        private const val MENU_LEFT = MENU_CENTER - MENU_WIDTH / 2
+        private const val MENU_RIGHT = MENU_CENTER + MENU_WIDTH / 2
+        private const val MENU_ICON_CELL = STACK_CELL
+        private const val MENU_ICON_SCALE = 0.75f
+        private const val MENU_TEXT = 13f
+        private const val MENU_TEXT_INSET = 5f
+        private const val MENU_HIGHLIGHT_ABOVE = 13f
+        private const val MENU_HIGHLIGHT_BELOW = 4f
+        private const val GEAR_SPOKES = 8
+        private const val POWER_ARC_START = -60f
+        private const val POWER_ARC_SWEEP = 300f
+        private val WAVEFORM_BARS = floatArrayOf(2f, 5f, 7f, 4f, 2f)
+        private val SCALE_NOTES = floatArrayOf(5f, 1f, -3f)
+        private const val HALF_TURN = 180f
+        private const val VISUAL_ICON_WIDTH = 24f
+        private const val VISUAL_ICON_HEIGHT = 13f
+        private const val VISUAL_ICON_WEIGHT = 2.5f
+        private val PARAMETER_ICONS = mapOf(
+            MainActivity.FX_SPEED to MenuIcon.SPEED, MainActivity.FX_NUDGE to MenuIcon.NUDGE, MainActivity.FX_WOBBLE_MODE to MenuIcon.WOBBLE,
+            MainActivity.FX_TRIM_START to MenuIcon.TRIM_START, MainActivity.FX_TRIM_END to MenuIcon.TRIM_END,
+            MainActivity.FX_DELAY_MIX to MenuIcon.MIX, MainActivity.FX_DISTORTION_MIX to MenuIcon.MIX, MainActivity.FX_AUTO_MIX to MenuIcon.MIX, MainActivity.FX_ROBOT_MIX to MenuIcon.MIX,
+            MainActivity.FX_HIGH_RESONANCE to MenuIcon.RESONANCE, MainActivity.FX_LOW_RESONANCE to MenuIcon.RESONANCE, MainActivity.FX_BAND_RESONANCE to MenuIcon.RESONANCE,
+            MainActivity.FX_DELAY_TIME to MenuIcon.CLOCK, MainActivity.FX_AUTO_RETUNE to MenuIcon.CLOCK,
+            MainActivity.FX_DRIVE to MenuIcon.DRIVE, MainActivity.FX_CRUSH_BITS to MenuIcon.BITS, MainActivity.FX_AUTO_SCALE to MenuIcon.SCALE, MainActivity.FX_AUTO_KEY to MenuIcon.KEYS, MainActivity.FX_EVERY_PASS to MenuIcon.PICK_PASS,
+            MainActivity.FX_ROBOT_MORPH to MenuIcon.MORPH, MainActivity.FX_WOBBLE_DEPTH to MenuIcon.DEPTH,
+            MainActivity.FX_CHOIR_DETUNE to MenuIcon.DETUNE, MainActivity.FX_CHOIR_OFFSET to MenuIcon.OFFSET,
+            MainActivity.FX_ATTACK to MenuIcon.ATTACK, MainActivity.FX_DECAY to MenuIcon.DECAY, MainActivity.FX_SUSTAIN to MenuIcon.SUSTAIN, MainActivity.FX_RELEASE to MenuIcon.RELEASE
+        )
+        private val MENU_ICONS = mapOf(
+            "Track effects" to MenuIcon.EFFECTS, "Add sample" to MenuIcon.ADD, "Tempo" to MenuIcon.TEMPO, "Sync" to MenuIcon.SYNC,
+            "Projects" to MenuIcon.TAPE, "System" to MenuIcon.GEAR, "Check the back" to MenuIcon.FLIP,
+            "Record microphone" to MenuIcon.MIC, "Record device" to MenuIcon.DEVICE, "Import sample" to MenuIcon.IMPORT,
+            "Text to speech" to MenuIcon.SPEECH, "Synth tone" to MenuIcon.WAVE,
+            "As MIDI" to MenuIcon.NOTE, "As WAV" to MenuIcon.WAVEFORM, "As Project" to MenuIcon.TAPE,
+            "One loop" to MenuIcon.LOOP, "All pads" to MenuIcon.GRID,
+            "New" to MenuIcon.ADD, "Open" to MenuIcon.OPEN, "Name" to MenuIcon.NAME, "Color" to MenuIcon.COLOR, "Export" to MenuIcon.EXPORT, "Delete" to MenuIcon.DELETE,
+            "Re-sync" to MenuIcon.SYNC, "Turn sync off" to MenuIcon.OFF,
+            "BPM" to MenuIcon.TEMPO, "Swing" to MenuIcon.SWING,
+            "Vibration intensity" to MenuIcon.VIBRATE, "Wheel sensitivity" to MenuIcon.WHEEL, "Effect volume" to MenuIcon.SPEAKER,
+            "Dark theme" to MenuIcon.MOON, "Left hand mode" to MenuIcon.MIRROR, "Use batteries" to MenuIcon.BATTERY,
+            "Trans flag" to MenuIcon.STAR, "Pride flag" to MenuIcon.STAR, "Swedish flag" to MenuIcon.STAR, "Lil' guy" to MenuIcon.STAR, "Case colors" to MenuIcon.STAR, "Sneaky guy" to MenuIcon.STAR,
+            "Order" to MenuIcon.ORDER, "Confirm" to MenuIcon.CHECK, "Mute" to MenuIcon.SPEAKER, "Unmute" to MenuIcon.SPEAKER,
+            "Wave" to MenuIcon.WAVE, "Note" to MenuIcon.NOTE, "Length" to MenuIcon.LENGTH, "Attack" to MenuIcon.ATTACK, "Release" to MenuIcon.RELEASE, "Sweep" to MenuIcon.SWEEP,
+            "Preview" to MenuIcon.PLAY, "Resume preview" to MenuIcon.PLAY, "Pause preview" to MenuIcon.PAUSE,
+            "Text" to MenuIcon.NAME, "Voice" to MenuIcon.SPEECH
+        )
+        private val MENU_ICON_PREFIXES = listOf("Copy stack" to MenuIcon.STACK, "Copy" to MenuIcon.COPY, "Paste" to MenuIcon.PASTE, "Reset" to MenuIcon.RESET)
+        private const val MENU_ROW_CENTER = -4.5f
+        private const val MENU_ARROW_HEIGHT = 5f
+        private const val MENU_POINTER_X = 5f
+        private const val MENU_ARROW_DROP = 15f
+        private const val MENU_ARROW_STROKE = 1.6f
         private const val SPLIT_PAUSE = 0.35f
         private const val TOUCH_SLOP_INNER = 4
         private const val TOUCH_SLOP_OUTER = 6

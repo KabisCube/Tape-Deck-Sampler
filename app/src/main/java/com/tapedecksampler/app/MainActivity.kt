@@ -48,7 +48,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 class MainActivity : Activity(), AudioEngine.Listener {
-    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, EFFECT_VOLUME, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, RECORD_POSITION, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
+    enum class Mode { HOME, PAGES, MENU, ADD_SAMPLE, SPEECH, SPEECH_VOICE, SYNTH, TEXT, DEVICE_RECORD, EXPORT, SYSTEM, BACK, SYNC, SYNC_CLAP, VIBRATION, SENSITIVITY, EFFECT_VOLUME, IMPORT_START, IMPORT_END, PROJECTS, PROJECT_OPEN, PROJECT_COLOR, PROJECT_DELETE, EXPORT_LOOPS, EFFECTS, FX_ADD, FX_OPTIONS, FX_REORDER, FX_VALUE, START, END, MIC_RECORD, RECORDING, IMPORT_POSITION, TEMPO, BPM, SWING }
 
     fun interface Work { @Throws(Exception::class) fun run() }
 
@@ -238,8 +238,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     @JvmField var start = 0
     @JvmField var end = Sequencer.DEFAULT_SLICE_FRAMES
     @JvmField var cursor = 0
-    @JvmField var recordStart = 0
-    @Volatile @JvmField var recordPosition = 0
+    @Volatile @JvmField var recordedFrames = 0
     @Volatile @JvmField var waveVersion = 0
     @JvmField var fine = false
     @JvmField var zoom = true
@@ -335,8 +334,6 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private var previewStart = 0L
     private var previewEnd = 0L
     private var sourcePreview: ShortArray? = null
-    private var recordingRegions: SampleRegions? = null
-    private var recordingId: String? = null
     @JvmField var sessions = ArrayList<SessionStore.Entry>()
     lateinit var session: SessionStore.Entry
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
@@ -648,7 +645,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         sequencer = loaded.sequencer
         track = loaded.track
         regions = loaded.regions
-        audio = AudioEngine(sequencer, tape, this)
+        audio = AudioEngine(sequencer, this)
         audio.setClapClock(clapClock)
         settings.edit().putString("activeSession", session.id).apply()
         pageClipboard = null; moveSource = -1; pageNote = PAGE_NOTE_NONE
@@ -768,6 +765,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.robotMix = json.optInt("robotMix", 0).coerceIn(0, 100)
         controls.chance = json.optInt("chance", 100).coerceIn(0, 100)
         controls.every = json.optInt("every", 1).coerceIn(1, MAX_EVERY)
+        controls.everyPass = json.optInt("everyPass", controls.every).coerceIn(1, controls.every)
         controls.wobbleMode = json.optInt("wobbleMode", 0).coerceIn(0, WOBBLE_MODES.size - 1)
         controls.wobbleRate = json.optInt("wobbleRate", Sequencer.Effects.DEFAULT_WOBBLE_RATE).coerceIn(MIN_WOBBLE_RATE, MAX_WOBBLE_RATE)
         controls.wobbleDepth = json.optInt("wobbleDepth", 0).coerceIn(0, 100)
@@ -796,7 +794,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
     private fun effectData(controls: Sequencer.Effects): JSONObject {
         val chain = JSONArray()
         for (group in controls.chain) chain.put(group)
-        return JSONObject().put("chain", chain).put("chance", controls.chance).put("every", controls.every)
+        return JSONObject().put("chain", chain).put("chance", controls.chance).put("every", controls.every).put("everyPass", controls.everyPass)
             .put("wobbleMode", controls.wobbleMode).put("wobbleRate", controls.wobbleRate).put("wobbleDepth", controls.wobbleDepth).put("gain", controls.gain.toDouble()).put("mute", controls.mute).put("speed", controls.speed)
             .put("pitchHalf", controls.pitch).put("reverb", controls.reverb).put("distortion", controls.distortion).put("drive", controls.drive).put("distortionMix", controls.distortionMix).put("crushBits", controls.crushBits).put("crushRate", controls.crushRate)
             .put("highPass", controls.highPass).put("lowPass", controls.lowPass).put("bandPass", controls.bandPass)
@@ -936,7 +934,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun systemItems(): Array<String> {
         val items = arrayListOf("Vibration intensity", "Wheel sensitivity", "Effect volume", "Dark theme / " + onOff(darkTheme), "Left hand mode / " + onOff(leftHandMode))
-        if (batteries.found) items.add("Require batteries / " + onOff(batteries.useBatteries))
+        if (batteries.found) items.add("Use batteries / " + onOff(batteries.useBatteries))
         for (secret in 0 until SECRETS) if (secretVisible(secret)) items.add(SECRET_LABELS[secret] + " / " + onOff(secretOn[secret]))
         return items.toTypedArray()
     }
@@ -1318,7 +1316,6 @@ class MainActivity : Activity(), AudioEngine.Listener {
         } else if (acquireFocus()) {
             when (mode) {
                 Mode.IMPORT_POSITION -> imported?.let { sequencer.toggleSelection(it, 0, it.size) }
-                Mode.RECORD_POSITION -> sequencer.toggleSelection(tape.samples, cursor, Tape.LENGTH)
                 else -> sequencer.toggleSelection(tape.samples, start, end)
             }
         }
@@ -1503,7 +1500,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         val paste = when (effectClipboardGroups.size) {
             0 -> "Paste"
             1 -> "Paste " + FX_NAMES[effectClipboardGroups[0]]
-            else -> "Paste stack / " + effectClipboardGroups.size + " effects"
+            else -> "Paste / " + effectClipboardGroups.size + " effects"
         }
         return arrayOf(copy, "Copy stack", paste, "Order", if (stepTarget >= 0) "Reset pad effects" else "Reset track effects")
     }
@@ -1574,6 +1571,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         parameter == FX_SWING && value == 0 -> sequencer.swing().toString() + "%"
         parameter == FX_NUDGE || parameter == FX_TRIM_START || parameter == FX_TRIM_END -> signed(value) + " ms"
         parameter == FX_EVERY -> ordinal(value)
+        parameter == FX_EVERY_PASS -> "Pass $value of ${effectControls().every}"
         parameter == FX_WOBBLE_MODE -> WOBBLE_MODES[value]
         parameter == FX_WOBBLE_RATE -> String.format(Locale.US, "%.1f Hz", value / WOBBLE_RATE_PER_HZ)
         parameter == FX_CHOIR_COPIES -> if (value == 1) "1 copy" else "$value copies"
@@ -1606,6 +1604,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         FX_NUDGE, FX_TRIM_START, FX_TRIM_END -> "NEGATIVE EARLIER / POSITIVE LATER"
         FX_CHANCE -> "0-100% ODDS PER HIT"
         FX_EVERY -> "PLAYS EVERY NTH LOOP PASS"
+        FX_EVERY_PASS -> "WHICH PASS IN THE CYCLE PLAYS"
         FX_WOBBLE_MODE -> "VOLUME / PITCH / SPEED"
         FX_WOBBLE_RATE -> "${MIN_WOBBLE_RATE / WOBBLE_RATE_PER_HZ}-${(MAX_WOBBLE_RATE / WOBBLE_RATE_PER_HZ).toInt()} Hz / LIVE"
         FX_WOBBLE_DEPTH -> "0-100% / LIVE"
@@ -1615,7 +1614,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         else -> "LIVE / SELECT TO SAVE"
     }
 
-    private fun effectSetting(parameter: Int): Int {
+    fun effectSetting(parameter: Int): Int {
         val controls = effectControls()
         return when (parameter) {
             FX_SPEED -> controls.speed
@@ -1652,6 +1651,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             FX_NUDGE -> controls.nudge
             FX_CHANCE -> controls.chance
             FX_EVERY -> controls.every
+            FX_EVERY_PASS -> controls.everyPass
             FX_WOBBLE_MODE -> controls.wobbleMode
             FX_WOBBLE_RATE -> controls.wobbleRate
             FX_WOBBLE_DEPTH -> controls.wobbleDepth
@@ -1714,7 +1714,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_SWING -> controls.swingOverride = value
                 FX_NUDGE -> controls.nudge = value
                 FX_CHANCE -> controls.chance = value
-                FX_EVERY -> controls.every = value
+                FX_EVERY -> controls.changeEvery(value)
+                FX_EVERY_PASS -> controls.everyPass = value
                 FX_WOBBLE_MODE -> controls.wobbleMode = value
                 FX_WOBBLE_RATE -> controls.wobbleRate = value
                 FX_WOBBLE_DEPTH -> controls.wobbleDepth = value
@@ -2017,6 +2018,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                     FX_DELAY_FEEDBACK -> (v + delta).coerceIn(1, TrackEffects.MAX_ECHOES)
                     FX_ATTACK, FX_DECAY, FX_RELEASE -> envelopeStep(v, delta)
                     FX_EVERY -> (v + delta).coerceIn(1, MAX_EVERY)
+                    FX_EVERY_PASS -> (v + delta).coerceIn(1, effectControls().every)
                     FX_WOBBLE_MODE -> (v + delta).coerceIn(0, WOBBLE_MODES.size - 1)
                     FX_WOBBLE_RATE -> (v + delta * FAST_STEP).coerceIn(MIN_WOBBLE_RATE, MAX_WOBBLE_RATE)
                     FX_TRIM_START, FX_TRIM_END -> (v + delta * (if (shiftZoomFrames in 1 until Tape.RATE / 2) 1 else FAST_STEP)).coerceIn(-MAX_SHIFT_MS, MAX_SHIFT_MS)
@@ -2045,7 +2047,6 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 end = (end + step).coerceIn(start + MIN_SLICE_FRAMES.toLong(), Tape.LENGTH.toLong()).toInt()
                 cursor = end
             }
-            Mode.RECORD_POSITION -> cursor = (cursor + step).coerceIn(0L, Tape.LENGTH - MIN_SLICE_FRAMES.toLong()).toInt()
             Mode.IMPORT_POSITION -> cursor = max(0L, min(Tape.LENGTH.toLong() - (imported?.size ?: 0), cursor + step)).toInt()
             else -> {}
         }
@@ -2080,7 +2081,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.IMPORT_END -> importEnd
         Mode.START -> start.toLong()
         Mode.END -> end.toLong()
-        Mode.RECORD_POSITION, Mode.IMPORT_POSITION -> cursor.toLong()
+        Mode.IMPORT_POSITION -> cursor.toLong()
         else -> selection.toLong()
     }
 
@@ -2194,7 +2195,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         return intArrayOf(from, from + span)
     }
 
-    fun isTimelineMode() = mode == Mode.START || mode == Mode.END || mode == Mode.RECORD_POSITION || mode == Mode.IMPORT_POSITION || mode == Mode.RECORDING || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END
+    fun isTimelineMode() = mode == Mode.START || mode == Mode.END || mode == Mode.IMPORT_POSITION || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END
 
     fun confirm() {
         if (busy || pageOpening >= 0) return
@@ -2267,7 +2268,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 } else recolorProject(selection)
             Mode.PROJECT_DELETE -> deleteProject()
             Mode.START, Mode.END -> saveSlice()
-            Mode.RECORD_POSITION -> requestRecording()
+            Mode.MIC_RECORD -> requestRecording()
             Mode.RECORDING -> { audio.stopRecording(); message = "FINISHING RECORDING…" }
             Mode.IMPORT_POSITION -> placeImport()
             Mode.TEMPO ->
@@ -2321,7 +2322,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                     mode = Mode.ADD_SAMPLE; selection = importReturnSelection
                 }
             }
-            Mode.RECORD_POSITION -> { mode = Mode.ADD_SAMPLE; selection = ADD_MICROPHONE }
+            Mode.MIC_RECORD -> { mode = Mode.ADD_SAMPLE; selection = ADD_MICROPHONE }
             Mode.TEMPO -> { mode = Mode.MENU; selection = MENU_TEMPO }
             Mode.BPM -> { sequencer.tempo(tempoBefore); mode = Mode.TEMPO; selection = TEMPO_BPM }
             Mode.SWING -> { sequencer.swing(swingBefore); mode = Mode.TEMPO; selection = TEMPO_SWING }
@@ -2380,13 +2381,15 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
     fun tempoItems() = arrayOf("BPM / " + sequencer.bpm(), "Swing / " + sequencer.swing() + "%")
 
-    fun hasTimelineZoom() = shifting() || mode == Mode.HOME || mode == Mode.START || mode == Mode.END || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END || mode == Mode.IMPORT_POSITION || mode == Mode.RECORD_POSITION
+    fun hasTimelineZoom() = shifting() || mode == Mode.HOME || mode == Mode.START || mode == Mode.END || mode == Mode.IMPORT_START || mode == Mode.IMPORT_END || mode == Mode.IMPORT_POSITION
+
+    fun recordingActive() = mode == Mode.RECORDING || (mode == Mode.DEVICE_RECORD && DeviceCaptureService.active())
 
     fun editingStep(step: Int) = stepTarget == step && (mode == Mode.EFFECTS || mode == Mode.FX_ADD || mode == Mode.FX_OPTIONS || mode == Mode.FX_REORDER || mode == Mode.FX_VALUE)
 
     private fun openAddSample() {
         when (selection) {
-            ADD_MICROPHONE -> { sequencer.stop(); cursor = sequencer.tracks[track].start; mode = Mode.RECORD_POSITION }
+            ADD_MICROPHONE -> { sequencer.stop(); mode = Mode.MIC_RECORD; message = "RECORD TO START RECORDING" }
             ADD_DEVICE -> { sequencer.stop(); mode = Mode.DEVICE_RECORD; message = "RECORD TO START RECORDING" }
             ADD_SPEECH -> { sequencer.stop(); mode = Mode.SPEECH; selection = SPEECH_TEXT }
             ADD_SYNTH -> { sequencer.stop(); synthEditing = false; mode = Mode.SYNTH; selection = 0 }
@@ -2631,8 +2634,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         Mode.IMPORT_START -> "IMPORT / START"
         Mode.IMPORT_END -> "IMPORT / END"
         Mode.IMPORT_POSITION -> "IMPORT / PLACE"
-        Mode.RECORD_POSITION -> "RECORD / POSITION"
-        Mode.RECORDING -> "RECORDING"
+        Mode.MIC_RECORD, Mode.RECORDING -> "RECORD / MICROPHONE"
         Mode.TEMPO -> "TEMPO"
         Mode.BPM -> "TEMPO / BPM"
         Mode.SWING -> "TEMPO / SWING"
@@ -2739,12 +2741,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
             return
         }
         if (!acquireFocus()) return
-        recordStart = cursor
-        recordPosition = cursor
-        recordingRegions = regions
-        recordingId = "record:" + java.util.UUID.randomUUID()
+        recordedFrames = 0
         mode = Mode.RECORDING
-        audio.record(cursor)
+        audio.record(microphoneCapture())
         instrument.invalidate()
     }
 
@@ -2770,28 +2769,21 @@ class MainActivity : Activity(), AudioEngine.Listener {
         grantedRequest = -1
         if (request == PERMISSION_DEVICE && mode == Mode.DEVICE_RECORD) requestDeviceRecording()
         else if (request == PERMISSION_CLAP && mode == Mode.SYNC_CLAP) beginClap()
-        else if (request == PERMISSION_RECORD && mode == Mode.RECORD_POSITION) requestRecording()
+        else if (request == PERMISSION_RECORD && mode == Mode.MIC_RECORD) requestRecording()
         if (ready) instrument.invalidate()
     }
 
-    override fun recorded(position: Int) {
-        recordPosition = position
-        recordingRegions?.place(recordStart, position, recordingId!!, "Recording")
-        waveVersion++
-    }
+    private fun microphoneCapture() = File(cacheDir, "microphone-capture.wav")
 
-    override fun recordingStarted() { recordingRegions?.checkpoint() }
+    override fun recorded(frames: Int) { recordedFrames = frames }
 
     override fun finished(error: String?) {
         runOnUiThread {
-            if (recordPosition > recordStart) {
-                synchronized(sequencer) { sequencer.tracks[track].start = recordStart; sequencer.tracks[track].end = recordPosition }
-                save()
-            }
-            cursor = recordPosition
-            mode = Mode.HOME
-            changed("RECORDED " + seconds((recordPosition - recordStart).toLong()) + "s / TRACK " + (track + 1))
-            if (error != null) error(error)
+            mode = Mode.MIC_RECORD
+            if (recordedFrames >= MIN_SLICE_FRAMES) {
+                decode(Uri.fromFile(microphoneCapture()), "Microphone recording", true)
+                if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+            } else error(error ?: "No audio recorded")
         }
     }
 
@@ -2929,6 +2921,8 @@ class MainActivity : Activity(), AudioEngine.Listener {
         importReturnSelection = when {
             speechFile?.let { Uri.fromFile(it) == uri } == true -> ADD_SPEECH
             synthFile?.let { Uri.fromFile(it) == uri } == true -> ADD_SYNTH
+            Uri.fromFile(microphoneCapture()) == uri -> ADD_MICROPHONE
+            Uri.fromFile(DeviceCaptureService.path(this)) == uri -> ADD_DEVICE
             else -> ADD_IMPORT
         }
         if (importReturnSelection != ADD_SPEECH) clearSpeechFile()
@@ -3160,10 +3154,11 @@ class MainActivity : Activity(), AudioEngine.Listener {
         const val FX_CHOIR_COPIES = 41
         const val FX_CHOIR_DETUNE = 42
         const val FX_CHOIR_OFFSET = 43
+        const val FX_EVERY_PASS = 44
         private const val LEGACY_ROBOT_SCALE = 5
         @JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Sync", "Projects", "System", "Check the back")
         @JvmField val EXPORT_ITEMS = arrayOf("As MIDI", "As WAV", "As Project")
-        @JvmField val ADD_SAMPLE = arrayOf("Record microphone", "Record device", "Import sample", "Text to speech", "Synth")
+        @JvmField val ADD_SAMPLE = arrayOf("Record microphone", "Record device", "Import sample", "Text to speech", "Synth tone")
         @JvmField val PROJECT_ITEMS = arrayOf("Open", "Name", "Color", "Export", "Delete")
         const val PAGE_NOTE_NONE = 0
         const val PAGE_NOTE_PASTED = 1
@@ -3189,14 +3184,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
         private val RETIRED_CASSETTE_NAMES = arrayOf("Ruby" to "Laser", "Coral" to "Peach", "Tangerine" to "Blaze", "Lemon" to "Volt", "Lime" to "Toxic",
             "Mint" to "Seafoam", "Teal" to "Cyber", "Sky" to "Powder", "Ocean" to "Powder", "Grape" to "Lavender")
         private val OLD_CASSETTE_NAMES = arrayOf("Smoke", "Ruby", "Tangerine", "Lemon", "Mint", "Ocean", "Grape", "Bubblegum", "Clear", "Lime", "Teal", "Sky", "Coral", "Cocoa")
-        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE", "CHOIR COPIES", "CHOIR DETUNE", "CHOIR OFFSET")
+        @JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE", "CHOIR COPIES", "CHOIR DETUNE", "CHOIR OFFSET", "TRIGGER PLAY ON")
         @JvmField val WOBBLE_MODES = arrayOf("Volume", "Pitch", "Speed")
         @JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass", "Reverse", "Choir")
         @JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY")
         const val ALONE_REASON = "ADD FILTER, DELAY, DIST OR REVERB"
         @JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.REVERSE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.CHOIR, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
-        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE), intArrayOf(), intArrayOf(FX_CHOIR_COPIES, FX_CHOIR_DETUNE, FX_CHOIR_OFFSET))
-        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"), arrayOf(), arrayOf("Copies", "Detune", "Offset"))
+        @JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY, FX_EVERY_PASS), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE), intArrayOf(), intArrayOf(FX_CHOIR_COPIES, FX_CHOIR_DETUNE, FX_CHOIR_OFFSET))
+        @JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every", "Play on"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"), arrayOf(), arrayOf("Copies", "Detune", "Offset"))
         const val SECRET_TRANS = 0
         const val SECRET_PRIDE = 1
         const val SECRET_SWEDEN = 2
