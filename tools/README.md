@@ -31,7 +31,7 @@ Changelogs live in `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt
 
 The workflow needs these repository secrets (GitHub > Settings > Secrets and variables > Actions):
 
-- `KEYSTORE_BASE64`: the keystore file as base64. In PowerShell from the project root: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("signing\release.jks")) | Set-Clipboard`
+- `KEYSTORE_BASE64`: the keystore file as base64. In PowerShell from the project root: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\signing\release.jks")) | Set-Clipboard`
 - `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`: the values from `signing/keystore.properties`
 
 ## F-Droid
