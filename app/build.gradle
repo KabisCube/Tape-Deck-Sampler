@@ -23,8 +23,8 @@ android {
         applicationId 'com.tapedecksampler.app'
         minSdk 26
         targetSdk 35
-        versionCode 33
-        versionName '2.20'
+        versionCode 34
+        versionName '0.2.5'
         testInstrumentationRunner 'com.tapedecksampler.app.DeviceChecks'
     }
     compileOptions {

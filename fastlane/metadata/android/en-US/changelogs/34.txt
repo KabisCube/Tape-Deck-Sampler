@@ -1,0 +1,4 @@
+- recording from microphone now uses the same workflow as the other Add sample options and lets the user trim and place before committing to a recording.
+- centered menus with icons, and new icons for options in effects.
+- the Nth effect can now start on other intervals.
+  - example: an Nth effect set to play every 2nd. can now set to play on pass 1 of 2, or 2 of 2.
