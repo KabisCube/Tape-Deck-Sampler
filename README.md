@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="docs/preview1.png" alt="Tape Deck Sampler front" width="45%">
-  <img src="docs/preview2.png" alt="Tape Deck Sampler back" width="45%">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" alt="Tape Deck Sampler front" width="45%">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" alt="Tape Deck Sampler back" width="45%">
 </p>
 
 # Tape Deck Sampler
@@ -75,26 +75,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 You can also open the project in Android Studio and press Run.
 
-### Windows scripts
-
-**Build Tape Deck Sampler.bat** is in the root; the other scripts are in `tools/`.
-
-- **Build Tape Deck Sampler.bat** runs the unit tests in `tests/`, builds debug and release APKs, runs lint and copies the release APK to `dist/TapeDeckSampler.apk`. Run `tools/build.ps1 -TestOnly` to only run the tests.
-- **Install Tape Deck Sampler to phone.bat** builds the release APK and installs it on one phone connected over USB with USB debugging on.
-- **render-battery-sleeves.ps1** redraws the battery label artwork in `app/src/main/res/drawable-nodpi` and a preview sheet in `dist/battery-brands.png`.
-- **Start Tape Deck Sampler.cmd** runs the built APK in an Android emulator. It needs the SDK, emulator and the `android-35` x86_64 system image in `.tools/sdk`. **Restart Tape Deck Sampler audio.cmd** restarts that emulator to reconnect Windows audio.
-
-The scripts build with `gradlew` and use a JDK or SDK in the local `.tools/` folder if one is there (it is ignored by git). Otherwise the build script falls back to `JAVA_HOME` and `ANDROID_HOME`. The phone and emulator scripts expect `adb` and the emulator in `.tools/sdk`.
-
-### Release signing
-
-To sign release builds with your own key, create a keystore in `signing/` and copy `signing/keystore.properties.example` to `signing/keystore.properties` with your values:
-
-```sh
-keytool -genkeypair -v -keystore signing/release.jks -alias tapedecksampler -keyalg RSA -keysize 4096 -validity 10000
-```
-
-Both `keystore.properties` and `*.jks` are ignored by git. If `keystore.properties` is missing, release builds are signed with the debug key instead.
+Windows helper scripts, release signing and publishing are described in [tools/README.md](tools/README.md).
 
 
 ## License
@@ -106,7 +87,7 @@ Tape Deck Sampler is distributed in the hope that it will be useful, but WITHOUT
 
 ## Credits
 
-The Album Marker font (`app/src/main/assets/fonts/AlbumMarker01-Regular.ttf`) and the hatch and tape sound effects (`app/src/main/assets/sounds/`) was made by KabisCube and licensed under the same GNU GPL v3-or-later license as the rest of this project.
+The Album Marker font (`app/src/main/assets/fonts/AlbumMarker01-Regular.ttf`), the hatch and tape sound effects (`app/src/main/assets/sounds/`) and the starter samples (`app/src/main/assets/samples/`) were made by KabisCube and licensed under the same GNU GPL v3-or-later license as the rest of this project.
 
 Built with [Kotlin](https://kotlinlang.org/) by JetBrains. The Kotlin standard library is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 

@@ -51,5 +51,10 @@ android {
             signingConfig keystoreFile.exists() ? signingConfigs.release : signingConfigs.debug
         }
     }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 

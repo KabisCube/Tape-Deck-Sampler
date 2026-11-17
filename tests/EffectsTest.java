@@ -559,6 +559,13 @@ public final class EffectsTest {
         check(Arrays.equals(passes(every, 2), new boolean[]{false, true}), "Pass counts restart with playback");
         every.tracks[0].every = 3;
         check(Arrays.equals(passes(every, 6), new boolean[]{false, false, true, false, false, true}), "Every 3rd plays on each third pass");
+        every.tracks[0].choosePass(1);
+        check(Arrays.equals(passes(every, 6), new boolean[]{true, false, false, true, false, false}), "Play on pass 1 of 3 plays the first pass of each cycle");
+        every.tracks[0].changeEvery(2);
+        check(every.tracks[0].playPass() == 1 && Arrays.equals(passes(every, 4), new boolean[]{true, false, true, false}), "Changing Every keeps an earlier pass");
+        every.tracks[0].choosePass(2); every.tracks[0].changeEvery(4);
+        check(every.tracks[0].playPass() == 4, "The last pass follows Every when it changes");
+        every.tracks[0].changeEvery(1);
         Sequencer pad = pulseSequence(tape, 3); pad.tempo(240);
         pad.editStep(0, 0).every = 2;
         pad.tracks[0].steps = 1;

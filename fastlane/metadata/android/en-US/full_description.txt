@@ -1,0 +1,19 @@
+Tape Deck Sampler is an easy to use sampler with eight tracks and a sixteen-step sequencer with up to 16 pages. Each project and its samples are stored on a digital 48kHz mono cassette tape with a 20 second sample limit.
+
+<b>Samples</b>
+<ul>
+<li>Record from the microphone or from other apps on Android 10 or later</li>
+<li>Import audio files, or make sounds with text to speech and the tone synth</li>
+<li>Trim each recording and place it anywhere on the tape</li>
+</ul>
+
+<b>Effects</b>
+Stack effects per track or per pad: filters, delay, reverb, distortion, envelope, autotune, robot voice, choir, pitch, speed, wobble, swing, nudge, chance, every Nth pass and more.
+
+<b>Clap sync</b>
+Jam with friends without a network. Set the same tempo on every phone, select Sync and clap once.
+
+<b>Export</b>
+Export your sequence as WAV or MIDI, or the whole project to move it to another phone.
+
+No ads, no tracking and no internet access.

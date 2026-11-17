@@ -14,6 +14,10 @@ if(NOT EXISTS "${ESPEAK_SOURCE}/src/libespeak-ng/CMakeLists.txt")
     )
 endif()
 
+get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+add_compile_options("-ffile-prefix-map=${PROJECT_ROOT}=." "-ffile-prefix-map=${CMAKE_BINARY_DIR}=build")
+add_link_options("-Wl,--build-id=none")
+
 set(HAVE_MKSTEMP ON)
 set(USE_KLATT ON)
 set(USE_ASYNC OFF)

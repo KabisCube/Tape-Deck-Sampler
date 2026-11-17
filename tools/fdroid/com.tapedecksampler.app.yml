@@ -1,0 +1,32 @@
+# Draft for the F-Droid submission. It goes in https://gitlab.com/fdroid/fdroiddata as metadata/com.tapedecksampler.app.yml.
+# Description, screenshots and changelogs come from fastlane/metadata in this repo.
+# Update the first Builds entry to the release you submit with.
+Categories:
+  - Multimedia
+License: GPL-3.0-or-later
+AuthorName: KabisCube
+SourceCode: https://github.com/KabisCube/Tape-Deck-Sampler
+IssueTracker: https://github.com/KabisCube/Tape-Deck-Sampler/issues
+Changelog: https://github.com/KabisCube/Tape-Deck-Sampler/releases
+
+AutoName: Tape Deck Sampler
+
+RepoType: git
+Repo: https://github.com/KabisCube/Tape-Deck-Sampler.git
+Binaries: https://github.com/KabisCube/Tape-Deck-Sampler/releases/download/v%v/TapeDeckSampler-%v.apk
+
+Builds:
+  - versionName: 0.2.5
+    versionCode: 34
+    commit: v0.2.5
+    subdir: app
+    gradle:
+      - yes
+    ndk: 28.2.13676358
+
+AllowedAPKSigningKeys: 8e745de3450150566b838004a579069f518e23aa727cdfa559b6a942e5508a6f
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v[0-9.]+$
+CurrentVersion: 0.2.5
+CurrentVersionCode: 34

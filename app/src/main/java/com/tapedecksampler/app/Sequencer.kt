@@ -47,7 +47,7 @@ class Sequencer(private val tape: Tape) {
         @JvmField var robotMix = 0
         @JvmField var chance = 100
         @JvmField var every = 1
-        @JvmField var everyPass = 1
+        @JvmField var everyPass = LAST_PASS
         @JvmField var wobbleMode = 0
         @JvmField var wobbleRate = DEFAULT_WOBBLE_RATE
         @JvmField var wobbleDepth = 0
@@ -227,14 +227,19 @@ class Sequencer(private val tape: Tape) {
         }
 
         fun changeEvery(value: Int) {
-            val wasLastPass = everyPass >= every
             every = value
-            everyPass = if (wasLastPass) every else everyPass.coerceIn(1, every)
+            if (everyPass >= every) everyPass = LAST_PASS
         }
+
+        fun choosePass(pass: Int) {
+            everyPass = if (pass >= every) LAST_PASS else pass
+        }
+
+        fun playPass(): Int = if (everyPass in 1 until every) everyPass else every
 
         fun playsOnPass(pass: Int): Boolean {
             val cycle = maxOf(1, every)
-            return pass % cycle == everyPass % cycle
+            return pass % cycle == playPass() % cycle
         }
 
         fun wobbles(): Boolean = powered(WOBBLE) && wobbleDepth > 0
@@ -262,7 +267,7 @@ class Sequencer(private val tape: Tape) {
                 SWING -> swingOverride = 0
                 NUDGE -> nudge = 0
                 CHANCE -> chance = 100
-                EVERY -> { every = 1; everyPass = 1 }
+                EVERY -> { every = 1; everyPass = LAST_PASS }
                 WOBBLE -> { wobbleMode = 0; wobbleRate = DEFAULT_WOBBLE_RATE; wobbleDepth = 0 }
                 SHIFT -> { trimStart = 0; trimEnd = 0; prepared = null }
                 REVERSE -> prepared = null
@@ -379,6 +384,7 @@ class Sequencer(private val tape: Tape) {
             private const val ON_REVERB = 25
             private const val ON_CHANCE = 50
             private const val ON_EVERY = 2
+            const val LAST_PASS = 0
             private const val ON_WOBBLE_DEPTH = 50
             private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, BAND_PASS, DISTORTION, REVERB, DELAY)
             private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, ROBOT, AUTOTUNE, CHOIR, REVERSE, SWING, NUDGE, WOBBLE, ENVELOPE)

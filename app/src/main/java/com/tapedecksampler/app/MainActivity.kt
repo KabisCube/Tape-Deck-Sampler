@@ -765,7 +765,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
         controls.robotMix = json.optInt("robotMix", 0).coerceIn(0, 100)
         controls.chance = json.optInt("chance", 100).coerceIn(0, 100)
         controls.every = json.optInt("every", 1).coerceIn(1, MAX_EVERY)
-        controls.everyPass = json.optInt("everyPass", controls.every).coerceIn(1, controls.every)
+        controls.choosePass(json.optInt("everyPass", Sequencer.Effects.LAST_PASS).coerceIn(Sequencer.Effects.LAST_PASS, controls.every))
         controls.wobbleMode = json.optInt("wobbleMode", 0).coerceIn(0, WOBBLE_MODES.size - 1)
         controls.wobbleRate = json.optInt("wobbleRate", Sequencer.Effects.DEFAULT_WOBBLE_RATE).coerceIn(MIN_WOBBLE_RATE, MAX_WOBBLE_RATE)
         controls.wobbleDepth = json.optInt("wobbleDepth", 0).coerceIn(0, 100)
@@ -1651,7 +1651,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
             FX_NUDGE -> controls.nudge
             FX_CHANCE -> controls.chance
             FX_EVERY -> controls.every
-            FX_EVERY_PASS -> controls.everyPass
+            FX_EVERY_PASS -> controls.playPass()
             FX_WOBBLE_MODE -> controls.wobbleMode
             FX_WOBBLE_RATE -> controls.wobbleRate
             FX_WOBBLE_DEPTH -> controls.wobbleDepth
@@ -1715,7 +1715,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
                 FX_NUDGE -> controls.nudge = value
                 FX_CHANCE -> controls.chance = value
                 FX_EVERY -> controls.changeEvery(value)
-                FX_EVERY_PASS -> controls.everyPass = value
+                FX_EVERY_PASS -> controls.choosePass(value)
                 FX_WOBBLE_MODE -> controls.wobbleMode = value
                 FX_WOBBLE_RATE -> controls.wobbleRate = value
                 FX_WOBBLE_DEPTH -> controls.wobbleDepth = value
