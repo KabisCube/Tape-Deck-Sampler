@@ -77,19 +77,21 @@ You can also open the project in Android Studio and press Run.
 
 ### Windows scripts
 
-- **Build Tape Deck Sampler.bat** runs the unit tests in `tests/`, builds debug and release APKs, runs lint and copies the release APK to `dist/TapeDeckSampler.apk`. Run `build.ps1 -TestOnly` to only run the tests.
+**Build Tape Deck Sampler.bat** is in the root; the other scripts are in `tools/`.
+
+- **Build Tape Deck Sampler.bat** runs the unit tests in `tests/`, builds debug and release APKs, runs lint and copies the release APK to `dist/TapeDeckSampler.apk`. Run `tools/build.ps1 -TestOnly` to only run the tests.
 - **Install Tape Deck Sampler to phone.bat** builds the release APK and installs it on one phone connected over USB with USB debugging on.
-- **tools/render-battery-sleeves.ps1** redraws the battery label artwork in `app/src/main/res/drawable-nodpi` and a preview sheet in `dist/battery-brands.png`.
-- **Start Tape Deck Sampler.cmd** runs the built APK in an Android emulator. It needs the SDK, emulator and the `android-35` x86_64 system image in `.tools/sdk`.
+- **render-battery-sleeves.ps1** redraws the battery label artwork in `app/src/main/res/drawable-nodpi` and a preview sheet in `dist/battery-brands.png`.
+- **Start Tape Deck Sampler.cmd** runs the built APK in an Android emulator. It needs the SDK, emulator and the `android-35` x86_64 system image in `.tools/sdk`. **Restart Tape Deck Sampler audio.cmd** restarts that emulator to reconnect Windows audio.
 
 The scripts build with `gradlew` and use a JDK or SDK in the local `.tools/` folder if one is there (it is ignored by git). Otherwise the build script falls back to `JAVA_HOME` and `ANDROID_HOME`. The phone and emulator scripts expect `adb` and the emulator in `.tools/sdk`.
 
 ### Release signing
 
-To sign release builds with your own key, create a keystore and copy `keystore.properties.example` to `keystore.properties` with your values:
+To sign release builds with your own key, create a keystore in `signing/` and copy `signing/keystore.properties.example` to `signing/keystore.properties` with your values:
 
 ```sh
-keytool -genkeypair -v -keystore release.jks -alias tapedecksampler -keyalg RSA -keysize 4096 -validity 10000
+keytool -genkeypair -v -keystore signing/release.jks -alias tapedecksampler -keyalg RSA -keysize 4096 -validity 10000
 ```
 
 Both `keystore.properties` and `*.jks` are ignored by git. If `keystore.properties` is missing, release builds are signed with the debug key instead.

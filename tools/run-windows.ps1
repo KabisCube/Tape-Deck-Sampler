@@ -1,18 +1,19 @@
 param([switch]$Restart)
 $ErrorActionPreference = 'Stop'
-Set-Location $PSScriptRoot
-$sdk = Join-Path $PSScriptRoot '.tools\sdk'
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+$sdk = Join-Path $root '.tools\sdk'
 $adb = Join-Path $sdk 'platform-tools\adb.exe'
 $emulator = Join-Path $sdk 'emulator\emulator.exe'
 $image = Join-Path $sdk 'system-images\android-35\default\x86_64'
-$apk = Join-Path $PSScriptRoot 'dist\TapeDeckSampler.apk'
+$apk = Join-Path $root 'dist\TapeDeckSampler.apk'
 $avdName = 'TapeDeckWindows'
 $serial = 'emulator-5560'
 $env:ANDROID_HOME = $sdk
 $env:ANDROID_SDK_ROOT = $sdk
-$env:ANDROID_USER_HOME = Join-Path $PSScriptRoot '.tools\android-user'
+$env:ANDROID_USER_HOME = Join-Path $root '.tools\android-user'
 $env:ANDROID_AVD_HOME = Join-Path $env:ANDROID_USER_HOME 'avd'
-$java = Get-ChildItem -LiteralPath "$PSScriptRoot\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+$java = Get-ChildItem -LiteralPath "$root\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($java) { $env:JAVA_HOME = $java.FullName }
 foreach ($required in @($adb, $emulator, $image, $apk)) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Missing $required. This launcher needs the local Android tools and built APK." }
@@ -67,7 +68,7 @@ if ($state.Code -eq 0) {
 if ($state.Code -ne 0) {
     Write-Host 'Opening Tape Deck Sampler. Startup can take a minute...'
     $arguments = @('-avd', $avdName, '-port', '5560', '-no-boot-anim', '-no-snapshot-load', '-gpu', 'swiftshader_indirect', '-memory', '2048', '-audio', 'dsound', '-allow-host-audio')
-    $process = Start-Process -FilePath $emulator -ArgumentList $arguments -WindowStyle Normal -PassThru -RedirectStandardOutput "$PSScriptRoot\.tools\windows-emulator.log" -RedirectStandardError "$PSScriptRoot\.tools\windows-emulator-error.log"
+    $process = Start-Process -FilePath $emulator -ArgumentList $arguments -WindowStyle Normal -PassThru -RedirectStandardOutput "$root\.tools\windows-emulator.log" -RedirectStandardError "$root\.tools\windows-emulator-error.log"
 }
 $deadline = (Get-Date).AddMinutes(3)
 do {

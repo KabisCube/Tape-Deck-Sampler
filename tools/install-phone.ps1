@@ -1,6 +1,7 @@
-Set-Location $PSScriptRoot
-$adb = "$PSScriptRoot\.tools\sdk\platform-tools\adb.exe"
-$apk = "$PSScriptRoot\app\build\outputs\apk\release\app-release.apk"
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+$adb = "$root\.tools\sdk\platform-tools\adb.exe"
+$apk = "$root\app\build\outputs\apk\release\app-release.apk"
 
 $devices = & $adb devices
 $phones = @($devices | ForEach-Object { if ($_ -match '^(\S+)\s+device$' -and $Matches[1] -notlike 'emulator-*') { $Matches[1] } })
@@ -9,12 +10,12 @@ if ($phones.Count -eq 0) { Write-Host 'No phone found. Connect it over USB with 
 if ($phones.Count -gt 1) { Write-Host "More than one phone connected: $($phones -join ', '). Leave only one connected."; exit 1 }
 $phone = $phones[0]
 
-$localJava = Get-ChildItem -LiteralPath "$PSScriptRoot\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+$localJava = Get-ChildItem -LiteralPath "$root\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($localJava) { $env:JAVA_HOME = $localJava.FullName }
 if (-not $env:JAVA_HOME) { Write-Host 'Install JDK 17 and set JAVA_HOME.'; exit 1 }
-$env:GRADLE_USER_HOME = "$PSScriptRoot\.tools\gradle-home"
-$env:ANDROID_USER_HOME = "$PSScriptRoot\.tools\android-user"
-if (Test-Path -LiteralPath "$PSScriptRoot\.tools\sdk") { $env:ANDROID_HOME = "$PSScriptRoot\.tools\sdk" }
+$env:GRADLE_USER_HOME = "$root\.tools\gradle-home"
+$env:ANDROID_USER_HOME = "$root\.tools\android-user"
+if (Test-Path -LiteralPath "$root\.tools\sdk") { $env:ANDROID_HOME = "$root\.tools\sdk" }
 $gradle = '.\gradlew.bat'
 
 & $gradle --no-daemon --console plain :app:assembleRelease

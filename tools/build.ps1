@@ -1,12 +1,13 @@
 param([switch]$TestOnly)
 $ErrorActionPreference = 'Stop'
-Set-Location $PSScriptRoot
-$localJava = Get-ChildItem -LiteralPath "$PSScriptRoot\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+$localJava = Get-ChildItem -LiteralPath "$root\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($localJava) { $env:JAVA_HOME = $localJava.FullName }
 if (-not $env:JAVA_HOME) { throw 'Install JDK 17 and set JAVA_HOME.' }
-$env:GRADLE_USER_HOME = "$PSScriptRoot\.tools\gradle-home"
-$env:ANDROID_USER_HOME = "$PSScriptRoot\.tools\android-user"
-if (Test-Path -LiteralPath "$PSScriptRoot\.tools\sdk") { $env:ANDROID_HOME = "$PSScriptRoot\.tools\sdk" }
+$env:GRADLE_USER_HOME = "$root\.tools\gradle-home"
+$env:ANDROID_USER_HOME = "$root\.tools\android-user"
+if (Test-Path -LiteralPath "$root\.tools\sdk") { $env:ANDROID_HOME = "$root\.tools\sdk" }
 $gradle = '.\gradlew.bat'
 & $gradle --no-daemon --console plain -q :app:compileReleaseJavaWithJavac
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
