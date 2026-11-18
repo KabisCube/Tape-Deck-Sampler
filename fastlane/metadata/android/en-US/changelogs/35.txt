@@ -1,0 +1,7 @@
+- there's now a global track mixer.
+- fresh battery brands are now randomized.
+- fixed animation bug when batteries were left outside the device and flipped it back and forth, some batteries would clip the lid.
+- the System menu has been renamed to Settings.
+- removed half done accessibility implementation for now. will revisit at another time.
+- cleaned out old keyboard and controller support that's not needed anymore.
+- fixed so all scripts use tabs instead of spaces for indents.
