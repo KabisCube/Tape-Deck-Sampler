@@ -1,6 +1,6 @@
 plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
+	id 'com.android.application'
+	id 'org.jetbrains.kotlin.android'
 }
 
 def keystoreProps = new Properties()
@@ -8,53 +8,53 @@ def keystoreFile = rootProject.file('signing/keystore.properties')
 if (keystoreFile.exists()) keystoreFile.withInputStream { keystoreProps.load(it) }
 
 android {
-    namespace 'com.tapedecksampler.app'
-    compileSdk 35
-    ndkVersion '28.2.13676358'
+	namespace 'com.tapedecksampler.app'
+	compileSdk 35
+	ndkVersion '28.2.13676358'
 
-    externalNativeBuild {
-        cmake {
-            path 'src/main/cpp/CMakeLists.txt'
-            version '3.22.1'
-        }
-    }
+	externalNativeBuild {
+		cmake {
+			path 'src/main/cpp/CMakeLists.txt'
+			version '3.22.1'
+		}
+	}
 
-    defaultConfig {
-        applicationId 'com.tapedecksampler.app'
-        minSdk 26
-        targetSdk 35
-        versionCode 34
-        versionName '0.2.5'
-        testInstrumentationRunner 'com.tapedecksampler.app.DeviceChecks'
-    }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = '17'
-    }
+	defaultConfig {
+		applicationId 'com.tapedecksampler.app'
+		minSdk 26
+		targetSdk 35
+		versionCode 34
+		versionName '0.2.5'
+		testInstrumentationRunner 'com.tapedecksampler.app.DeviceChecks'
+	}
+	compileOptions {
+		sourceCompatibility JavaVersion.VERSION_17
+		targetCompatibility JavaVersion.VERSION_17
+	}
+	kotlinOptions {
+		jvmTarget = '17'
+	}
 
-    signingConfigs {
-        release {
-            if (keystoreFile.exists()) {
-                storeFile new File(keystoreFile.parentFile, keystoreProps['storeFile'])
-                storePassword keystoreProps['storePassword']
-                keyAlias keystoreProps['keyAlias']
-                keyPassword keystoreProps['keyPassword']
-            }
-        }
-    }
+	signingConfigs {
+		release {
+			if (keystoreFile.exists()) {
+				storeFile new File(keystoreFile.parentFile, keystoreProps['storeFile'])
+				storePassword keystoreProps['storePassword']
+				keyAlias keystoreProps['keyAlias']
+				keyPassword keystoreProps['keyPassword']
+			}
+		}
+	}
 
-    buildTypes {
-        release {
-            signingConfig keystoreFile.exists() ? signingConfigs.release : signingConfigs.debug
-        }
-    }
+	buildTypes {
+		release {
+			signingConfig keystoreFile.exists() ? signingConfigs.release : signingConfigs.debug
+		}
+	}
 
-    dependenciesInfo {
-        includeInApk = false
-        includeInBundle = false
-    }
+	dependenciesInfo {
+		includeInApk = false
+		includeInBundle = false
+	}
 }
 

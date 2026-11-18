@@ -4,14 +4,14 @@ project(retro-speech VERSION 1.52.0 LANGUAGES C)
 set(THIRD_PARTY "${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/espeak-ng")
 set(ESPEAK_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/espeak-ng-1.52.0")
 if(NOT EXISTS "${ESPEAK_SOURCE}/src/libespeak-ng/CMakeLists.txt")
-    execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E tar xzf "${THIRD_PARTY}/espeak-ng-1.52.0.tar.gz" --
-            espeak-ng-1.52.0/src/libespeak-ng
-            espeak-ng-1.52.0/src/ucd-tools
-            espeak-ng-1.52.0/src/include/espeak-ng
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        COMMAND_ERROR_IS_FATAL ANY
-    )
+	execute_process(
+		COMMAND "${CMAKE_COMMAND}" -E tar xzf "${THIRD_PARTY}/espeak-ng-1.52.0.tar.gz" --
+			espeak-ng-1.52.0/src/libespeak-ng
+			espeak-ng-1.52.0/src/ucd-tools
+			espeak-ng-1.52.0/src/include/espeak-ng
+		WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+		COMMAND_ERROR_IS_FATAL ANY
+	)
 endif()
 
 get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)

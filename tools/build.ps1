@@ -47,8 +47,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$env:JAVA_HOME\bin\java.exe" -cp $cp com.tapedecksampler.app.TimelineWindowTest
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (-not $TestOnly) {
-    & $gradle --no-daemon --console plain :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    New-Item -ItemType Directory -Force dist | Out-Null
-    Copy-Item -LiteralPath app\build\outputs\apk\release\app-release.apk -Destination dist\TapeDeckSampler.apk -Force
+	& $gradle --no-daemon --console plain :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease
+	if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+	New-Item -ItemType Directory -Force dist | Out-Null
+	Copy-Item -LiteralPath app\build\outputs\apk\release\app-release.apk -Destination dist\TapeDeckSampler.apk -Force
 }
