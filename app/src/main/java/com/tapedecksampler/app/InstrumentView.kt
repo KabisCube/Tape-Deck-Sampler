@@ -1,6 +1,7 @@
 package com.tapedecksampler.app
 
 import android.graphics.Bitmap
+import android.graphics.BlendMode
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
@@ -8,10 +9,13 @@ import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.os.Build
 import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
@@ -68,6 +72,22 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 	private var splitStart = 0L
 	private var lockGroup = -1
 	private var lockUntil = 0L
+	private val glitchRandom = Random()
+	private val stripeGlitch = GlitchChannel(intArrayOf(CircuitBend.STUTTER, CircuitBend.HOWL), STRIPE_ODDS, STRIPE_COOLDOWN_MILLIS,
+		STRIPE_MIN_MILLIS, STRIPE_EXTRA_MILLIS, STRIPE_STUCK_ODDS, STRIPE_STUCK_MIN_MILLIS, STRIPE_STUCK_EXTRA_MILLIS)
+	private val padGlitch = GlitchChannel(intArrayOf(CircuitBend.CLOCK, CircuitBend.BATTERY), PAD_ODDS, PAD_COOLDOWN_MILLIS,
+		PAD_MIN_MILLIS, PAD_EXTRA_MILLIS, PAD_STUCK_ODDS, PAD_STUCK_MIN_MILLIS, PAD_STUCK_EXTRA_MILLIS, PAD_RESIDUE_SHARE)
+	private val inkGlitch = GlitchChannel(intArrayOf(CircuitBend.SHORT), INK_ODDS, INK_COOLDOWN_MILLIS,
+		INK_MIN_MILLIS, INK_EXTRA_MILLIS, INK_STUCK_ODDS, INK_STUCK_MIN_MILLIS, INK_STUCK_EXTRA_MILLIS, INK_RESIDUE_SHARE)
+	private val glitches = arrayOf(stripeGlitch, padGlitch, inkGlitch)
+	private var screenGlitching = false
+	/** Recolors whatever is already on the LCD: keeps its brightness, swaps in the glitch hue. Its own Paint so the blend never leaks. */
+	private val blockPaint = Paint().apply {
+		style = Paint.Style.FILL
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) blendMode = BlendMode.COLOR
+		else xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
+	}
+	private var inkCount = 0
 	private var scale = 1f
 	private var offsetX = 0f
 	private var offsetY = 0f
@@ -185,6 +205,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		super.onDraw(c)
 		if (auditText) textBoxes.clear()
 		val now = SystemClock.uptimeMillis()
+		val powered = app.powered()
+		glitchHeat = app.sequencer.bendHeat
+		for (glitch in glitches) glitch.update(now, app.sequencer.bendEvents, glitchRandom, powered, glitchHeat)
+		maybePopHatch(powered)
 		val back = app.mode == Mode.BACK
 		if (back != showingBack) { showingBack = back; flipStart = now }
 		val flip = min(1f, (now - flipStart) / FLIP_MILLIS.toFloat())
@@ -219,9 +243,196 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		turningNow = false
 		if (lidOnTop) travellingLid(c, flip, back)
 		c.restore()
-		val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || introName != null || app.carouselMode() || app.newCassetteActive() || app.renameActive() || throwStart >= 0 || deckOut > 0 || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0 || !hatchHoldResting
+		val moving = flip < 1 || transitionTarget >= 0 || now - revealStart < REVEAL_MILLIS || insertStart >= 0 || introName != null || app.carouselMode() || app.newCassetteActive() || app.renameActive() || throwStart >= 0 || deckOut > 0 || blinking(now) || clapReady() || lidMoving || batteriesMoving(now) || peelStart >= 0 || !hatchHoldResting || glitches.any { it.active(now) }
 		if (animating && (splitGroup >= 0 || moving)) postInvalidateOnAnimation()
 		else if (animating && (app.sequencer.isPlaying() || app.sequencer.isSyncWaiting() || app.sequencer.isPreviewing() || app.mode == Mode.RECORDING || app.mode == Mode.FX_REORDER || app.busy)) postInvalidateDelayed(FRAME_MILLIS)
+	}
+
+	/**
+	 * One kind of rare display glitch. It listens to some kinds of circuit-bend audio events, rolls its own dice,
+	 * keeps its own cooldown, and now and then gets "stuck": it holds one wrong look for seconds instead of flickering.
+	 * When it ends it can leave residue: a few elements keep their wrong color, some until this channel glitches
+	 * again, others only for a random few seconds, so they fade back at unpredictable moments.
+	 */
+	private class GlitchChannel(
+		private val own: IntArray, private val odds: Float, private val cooldown: Long,
+		private val shortest: Long, private val extra: Int,
+		private val stuckOdds: Float, private val stuckShortest: Long, private val stuckExtra: Int,
+		private val residueShare: Float = 0f,
+	) {
+		private val seen = LongArray(CircuitBend.CHAOS)
+		private var until = 0L
+		private var cooldownUntil = 0L
+		private var seed = 0L
+		private var stuck = false
+		private var residueSeed = 0L
+		var hasResidue = false; private set
+		var startedAt = 0L; private set
+		/** Bit mask of the few slots (pads) this glitch picked; each picked pad runs its own little color script. */
+		var picked = 0; private set
+		val seedValue get() = seed
+		val endsAt get() = until
+		private var quietUntil = 0L
+
+		/** Wipes this glitch and its leftover colors, and keeps it quiet for a moment so the wipe is visible. */
+		fun clear(now: Long) {
+			until = min(until, now)
+			hasResidue = false
+			quietUntil = now + GLITCH_CLEAR_QUIET_MILLIS
+		}
+
+		/**
+		 * Listens to every kind of audio glitch, but its own kinds count fully and the others only weakly.
+		 * Heat (bend Feedback x Mix x Chaos) raises the odds, shortens the cooldown, lengthens bursts and lets it fire on
+		 * its own; at full heat it keeps coming back after only a short random breather.
+		 */
+		fun update(now: Long, events: java.util.concurrent.atomic.AtomicLongArray, random: Random, powered: Boolean, heat: Float) {
+			var chance = 0f
+			for (type in 0 until CircuitBend.CHAOS) {
+				val count = events.get(type)
+				if (count == seen[type]) continue
+				seen[type] = count
+				chance = max(chance, if (type in own) odds else odds * GLITCH_OTHER_WEIGHT)
+			}
+			if (!powered || now < until || now < quietUntil) return
+			val boost = heat * heat
+			val full = heat >= GLITCH_FULL_HEAT
+			if (random.nextFloat() < boost * boost * GLITCH_SPONTANEOUS) chance = 1f
+			if (now < cooldownUntil) return
+			if (!full && (chance == 0f || random.nextFloat() >= chance + (1 - chance) * boost)) return
+			stuck = random.nextFloat() < stuckOdds
+			val length = if (stuck) stuckShortest + random.nextInt(stuckExtra) else shortest + random.nextInt(extra)
+			until = now + (length * (1 + GLITCH_HEAT_LENGTH * boost)).toLong()
+			cooldownUntil = until + (cooldown * (1 - heat) * (1 - heat)).toLong() + GLITCH_MIN_GAP_MILLIS + random.nextInt(GLITCH_GAP_EXTRA_MILLIS)
+			seed = random.nextLong()
+			startedAt = now
+			picked = 0
+			repeat(1 + random.nextInt(PAD_BASE_PICKS) + Math.round(boost * GLITCH_HEAT_PADS)) { picked = picked or (1 shl random.nextInt(Sequencer.STEPS)) }
+			residueSeed = random.nextLong()
+			hasResidue = residueShare > 0
+		}
+
+		fun active(now: Long) = now < until
+
+		/** Dice that stay the same for this whole glitch (null when it isn't active). */
+		fun steady(now: Long, salt: Int): Random? = if (now >= until) null else Random(seed + salt * 31)
+
+		/** Dice for this moment of the glitch; a stuck glitch keeps the same dice so it holds still. */
+		fun frame(now: Long, salt: Int): Random? =
+			if (now >= until) null else Random(seed + (if (stuck) 0 else now / GLITCH_FRAME_MILLIS) * 7919 + salt * 31)
+
+		/**
+		 * After a glitch ends, returns non-zero scrambled bits for the few elements (by key) left holding a wrong color,
+		 * or 0 for elements that are back to normal. Each element's own bits also decide how long it lingers: until the
+		 * next glitch of this channel, or a random few seconds. A hash, not a Random, so it allocates nothing and gives
+		 * the same answer every frame.
+		 */
+		fun residue(now: Long, key: Int, heat: Float): Long {
+			if (!hasResidue || now < until) return 0
+			val bits = mix(residueSeed + key * 0x9e3779b97f4a7c15uL.toLong())
+			if ((bits ushr 40) / (1 shl 24).toFloat() >= residueShare + GLITCH_HEAT_RESIDUE * heat) return 0
+			val forever = ((bits ushr 24) and 0xff) < (RESIDUE_FOREVER_SHARE * 256).toInt()
+			val linger = RESIDUE_MIN_MILLIS + ((bits ushr 32) and 0xffff) % RESIDUE_EXTRA_MILLIS
+			return if (forever || now - until < linger) bits or 1 else 0
+		}
+
+		/** SplitMix64: turns any number into well-scrambled bits. */
+		private fun mix(value: Long): Long {
+			var z = value + 0x9e3779b97f4a7c15uL.toLong()
+			z = (z xor (z ushr 30)) * 0xbf58476d1ce4e5b9uL.toLong()
+			z = (z xor (z ushr 27)) * 0x94d049bb133111ebuL.toLong()
+			return z xor (z ushr 31)
+		}
+	}
+
+	/** True when a touch (in deck coordinates) lands on the LCD glass. */
+	private fun onScreenGlass(px: Float, py: Float) =
+		px > SCREEN_LEFT && px < SCREEN_RIGHT && py > SCREEN_TOP + SCREEN_DROP + TOP_SHIFT && py < SCREEN_BOTTOM + TOP_SHIFT
+
+	/**
+	 * Pad glitches pick only a few pads. Each runs its own script: it changes color a few times at its own random
+	 * moments (to a wrong color or back to normal), and when the glitch ends it either settles back or stays stuck,
+	 * some until the next pad glitch and some for a random few seconds.
+	 */
+	private fun padGlitchColor(base: Int, pad: Int): Int {
+		val glitch = padGlitch
+		if (glitch.picked and (1 shl pad) == 0 || !glitch.hasResidue) return base
+		val now = SystemClock.uptimeMillis()
+		val script = Random(glitch.seedValue + pad * 7919L)
+		val duration = max(1L, glitch.endsAt - glitch.startedAt).toFloat()
+		val elapsed = min(now, glitch.endsAt) - glitch.startedAt
+		val flips = 1 + script.nextInt(PAD_MAX_FLIPS)
+		var color = base
+		for (flip in 0 until flips) {
+			val at = duration * (flip + script.nextFloat()) / (flips + 0.5f)
+			val back = flip > 0 && script.nextFloat() < PAD_BACK_ODDS
+			val style = script.nextInt(3); val pick = script.nextInt(GLITCH_COLORS.size)
+			if (elapsed >= at) color = if (back) base else recolor(base, style, pick)
+		}
+		if (glitch.active(now)) return color
+		if (color == base || script.nextFloat() >= PAD_STICK_ODDS) return base
+		val forever = script.nextFloat() < RESIDUE_FOREVER_SHARE
+		val linger = RESIDUE_MIN_MILLIS + script.nextInt(RESIDUE_EXTRA_MILLIS.toInt())
+		return if (forever || now - glitch.endsAt < linger) color else base
+	}
+
+	private fun recolor(color: Int, style: Int, pick: Int): Int {
+		val r = Color.red(color); val g = Color.green(color); val b = Color.blue(color)
+		return when (style) {
+			0 -> Color.argb(Color.alpha(color), g, b, r)
+			1 -> Color.argb(Color.alpha(color), 255 - r, 255 - g, 255 - b)
+			else -> GLITCH_COLORS[pick]
+		}
+	}
+
+	/** During a glitch, flickers some elements; afterwards keeps the residue elements (by key) in their wrong color. */
+	private fun glitchedColor(glitch: GlitchChannel, color: Int, salt: Int, share: Float, key: Int = salt): Int {
+		val now = SystemClock.uptimeMillis()
+		val random = glitch.frame(now, salt)
+		val hot = share + (GLITCH_MAX_SHARE - share) * glitchHeat * glitchHeat
+		if (random != null) return if (random.nextFloat() > hot) color else recolor(color, random.nextInt(3), random.nextInt(GLITCH_COLORS.size))
+		if (key == NO_RESIDUE_KEY) return color
+		val bits = glitch.residue(now, key, glitchHeat)
+		return if (bits == 0L) color else recolor(color, ((bits ushr 8) % 3).toInt(), ((bits ushr 16) % GLITCH_COLORS.size).toInt())
+	}
+
+	/**
+	 * Every LCD drawing helper passes its color through here. During a glitch some elements change color; text also
+	 * passes a key (its own words) so residue sticks to the same text even as menus change.
+	 */
+	private fun screenInk(color: Int, key: Int = NO_RESIDUE_KEY): Int =
+		if (!drawingScreen || color == LCD_DARK) color
+		else if (screenGlitching) glitchedColor(inkGlitch, color, GLITCH_INK_SALT + inkCount++, GLITCH_INK_SHARE)
+		else if (key == NO_RESIDUE_KEY) color
+		else glitchedColor(inkGlitch, color, 0, 0f, key)
+
+	private var glitchHeat = 0f
+
+	/**
+	 * The LCD's dead-column glitch: a full-height slice on the right whose pixels can only show one color now
+	 * (blended over what's already drawn), plus a couple of faint, thin flickering stripes.
+	 */
+	private fun screenGlitch(c: Canvas) {
+		val now = SystemClock.uptimeMillis()
+		val block = stripeGlitch.steady(now, -2) ?: return
+		val random = stripeGlitch.frame(now, -1) ?: return
+		val top = SCREEN_TOP + CONTENT_LIFT
+		val bottom = SCREEN_BOTTOM - SCREEN_DROP + CONTENT_LIFT
+		val width = SCREEN_RIGHT - SCREEN_LEFT
+		c.save()
+		c.clipRect(SCREEN_LEFT, top, SCREEN_RIGHT, bottom)
+		val share = BLOCK_MIN_SHARE + block.nextFloat() * BLOCK_EXTRA_SHARE
+		blockPaint.color = GLITCH_COLORS[block.nextInt(GLITCH_COLORS.size)]
+		c.drawRect(SCREEN_RIGHT - width * share, top, SCREEN_RIGHT, bottom, blockPaint)
+		paint.style = Paint.Style.FILL
+		repeat(random.nextInt(STRIPE_MAX_COUNT + 1) + Math.round(glitchHeat * glitchHeat * GLITCH_HEAT_STRIPES)) {
+			val y = top + random.nextFloat() * (bottom - top)
+			paint.color = GLITCH_COLORS[random.nextInt(GLITCH_COLORS.size)]
+			paint.alpha = STRIPE_MIN_ALPHA + random.nextInt(STRIPE_EXTRA_ALPHA)
+			c.drawRect(SCREEN_LEFT + random.nextFloat() * width * 0.5f, y, SCREEN_RIGHT, y + 1 + random.nextInt(3), paint)
+		}
+		paint.alpha = 255
+		c.restore()
 	}
 
 	private fun bodyColor() = (if (app.darkTheme) DARK_CASES else CASES)[app.batteries.switches]
@@ -306,8 +517,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		stepIntro(now)
 		var t = if (insertStart < 0) -1L else now - insertStart
 		if (t >= CLOSE_END) { insertStart = -1; t = -1 }
+		val animated = if (t < 0) deckHatch() else hatchAngle(t)
+		// Hand-off: once a project animation's own hatch is fully open, it takes over the glitch-opened hatch.
+		// Its opening was hidden under the already-open hatch; it then closes it normally, and the glitch is over.
+		if (glitchHatch && animated >= HATCH_DEGREES) glitchHatch = false
 		stepHatchHold(now, t)
-		val hatch = max(if (t < 0) deckHatch() else hatchAngle(t), heldHatch())
+		val hatch = max(animated, heldHatch())
 		hatchOn = hatch > 0
 		frameT = t
 		playMotionSounds(hatch, t)
@@ -429,13 +644,33 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		c.concat(hatchMatrix)
 	}
 
+	/**
+	 * A circuit-bend glitch can (very rarely) pop the hatch open. It stays open until the hatch is tapped, or until a
+	 * project animation takes it over: that animation skips its opening (already open) and plays its normal closing.
+	 */
+	private var glitchHatch = false
+	private var hatchTap = false
+	private var hatchEventsSeen = -1L
+
+	private fun maybePopHatch(powered: Boolean) {
+		var total = 0L
+		for (type in 0 until CircuitBend.CHAOS) total += app.sequencer.bendEvents.get(type)
+		val fresh = if (hatchEventsSeen < 0) 0L else total - hatchEventsSeen
+		hatchEventsSeen = total
+		if (fresh <= 0 || glitchHatch || !powered || app.mode == Mode.BACK || cassetteBusy() || deckOut > 0f) return
+		if (glitchRandom.nextDouble() < fresh * HATCH_GLITCH_ODDS) glitchHatch = true
+	}
+
+	private fun onHatch(px: Float, py: Float) =
+		px > HATCH_L && px < HATCH_R && py > HATCH_T + TOP_SHIFT && py < HATCH_B + TOP_SHIFT
+
 	private var hatchHold = 0f
 	private var hatchHoldOpening = false
 	private var hatchHoldFrame = 0L
 	private var hatchHoldResting = true
 
 	private fun stepHatchHold(now: Long, t: Long) {
-		val goal = if (cassetteReturningToDeck() || introHatchOpen(now)) 1f else 0f
+		val goal = if (glitchHatch || cassetteReturningToDeck() || introHatchOpen(now)) 1f else 0f
 		val dt = if (hatchHoldResting) 0f else min(100L, now - hatchHoldFrame) / HATCH_MILLIS.toFloat()
 		hatchHoldFrame = now
 		val insertTookOver = t >= OPEN_END
@@ -693,7 +928,10 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
 	private fun loadedKey() = if (app.noTape) Int.MIN_VALUE + 1 else app.session.number
 
-	private fun deckGoal() = if (app.renameActive() || app.carouselMode() && app.carouselKey() == loadedKey()) 1f else 0f
+	// In the Open carousel the loaded tape stays lifted out while browsing; once you've turned away from it,
+	// it's ejected onto the shelf (see stepDeckOut) instead of flying back into the deck.
+	private fun deckGoal() = if (app.renameActive() || app.carouselMode() && app.carouselKey() == loadedKey()
+		|| app.mode == Mode.PROJECT_OPEN && !app.noTape) 1f else 0f
 
 	private fun cassetteReturningToDeck() = insertStart < 0 && deckGoal() == 0f && deckOut > DECK_LIFTED
 
@@ -704,6 +942,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		if (insertStart >= 0) { deckOut = 0f; return }
 		deckOut = if (goal > deckOut) min(goal, deckOut + dt) else max(goal, deckOut - dt)
 		deckResting = deckOut == goal
+		if (deckOut >= 1f && app.mode == Mode.PROJECT_OPEN && !app.noTape && app.carouselKey() != loadedKey()) {
+			app.ejectToShelf()
+			// The lifted tape is now just a tape on the shelf, already sitting in its slot; the deck is empty and closed.
+			if (app.noTape) { deckOut = 0f; deckResting = true }
+		}
 	}
 
 	private fun deckHatch(): Float = HATCH_DEGREES * when {
@@ -1436,6 +1679,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		if (!app.powered() || introScreenOff) return
 		c.save(); c.translate(0f, SCREEN_DROP - CONTENT_LIFT); c.clipRect(SCREEN_LEFT, SCREEN_TOP + CONTENT_LIFT, SCREEN_RIGHT, SCREEN_BOTTOM - SCREEN_DROP + CONTENT_LIFT)
 		drawingScreen = true
+		screenGlitching = inkGlitch.active(SystemClock.uptimeMillis())
+		inkCount = 0
 		text(c, String.format(Locale.US, "%03d BPM", app.sequencer.bpm()), LCD_LEFT, 61f + HEADER_DROP, LCD_TEXT, LCD, mono)
 		paint.textSize = 10f; paint.typeface = monoBold
 		val meter = app.batteries.useBatteries
@@ -1528,6 +1773,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 			else -> timeline(c)
 		}
 		if (showsTapeIcon()) tapeIcon(c, 364f, 200f - LOW_ROW, tapeFraction())
+		screenGlitch(c)
 		drawingScreen = false
 		c.restore()
 	}
@@ -1675,6 +1921,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		text(c, "OPEN TAPE", LCD_LEFT, LCD_TITLE_Y, LCD_TITLE_TEXT, LCD, mono)
 		rightText(c, String.format(Locale.US, "%d / %d", index + 1, size), LCD_RIGHT, LCD_TITLE_Y, LCD_TEXT, LCD, mono)
 		text(c, app.carouselName().uppercase(Locale.US), LCD_LEFT, 140f, 20f, LCD, monoBold)
+		if (app.noTape) text(c, "NO TAPE IN THE DECK", LCD_LEFT, NO_TAPE_BROWSER_Y, LCD_TEXT, ORANGE, monoBold)
 		val action = if (app.importSelected()) "IMPORT" else if (app.newSelected()) "NEW" else "LOAD"
 		text(c, "TURN: BROWSE  SELECT: $action", LCD_LEFT, LCD_HINT_Y, LCD_TEXT, LCD, mono)
 	}
@@ -2160,7 +2407,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 	}
 
 	private fun box(c: Canvas, left: Float, top: Float, right: Float, bottom: Float, color: Int, width: Float) {
-		paint.color = color; paint.style = Paint.Style.STROKE; paint.strokeWidth = width * lineWeight
+		paint.color = screenInk(color); paint.style = Paint.Style.STROKE; paint.strokeWidth = width * lineWeight
 		c.drawRoundRect(left, top, right, bottom, STACK_RADIUS, STACK_RADIUS, paint)
 		paint.style = Paint.Style.FILL
 	}
@@ -2246,6 +2493,15 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 				stroke(c, x, y, s, false, -3f, -6f, -6f, -3f, -3f, 0f)
 				stroke(c, x, y, s, false, -7f, 3f, 6f, 3f)
 				stroke(c, x, y, s, false, 3f, 0f, 6f, 3f, 3f, 6f)
+			}
+			Sequencer.Effects.BEND -> {
+				stroke(c, x, y, s, false, 2f, -7f, -4f, 1f, 1f, 1f, -2f, 7f)
+				paint.style = Paint.Style.FILL
+				c.drawCircle(x - 6.5f * s, y - 5.5f * s, 1.6f * s, paint)
+				c.drawCircle(x + 6.5f * s, y + 5.5f * s, 1.6f * s, paint)
+				paint.style = Paint.Style.STROKE
+				stroke(c, x, y, s, false, -6.5f, -5.5f, -6.5f, 6f, -3f, 6f)
+				stroke(c, x, y, s, false, 6.5f, 5.5f, 6.5f, -6f, 3f, -6f)
 			}
 			Sequencer.Effects.CHOIR -> {
 				c.drawCircle(x - 4.5f * s, y - 1f * s, 2.5f * s, paint)
@@ -2462,12 +2718,53 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 					line(c, x, y, min(r, x + w * 0.5f), y, if (copy % 2 == 0 || asIcon) accent else tint(accent, LCD_DARK, 0.35f), 2f)
 				}
 			}
+			MainActivity.FX_BEND_SCOPE -> {
+				for (i in 0 until Sequencer.TRACKS) {
+					val lit = fx.bendScope == CircuitBend.DEVICE || i == app.track
+					val x0 = l + w * i / Sequencer.TRACKS + 2; val x1 = l + w * (i + 1) / Sequencer.TRACKS - 2
+					rect(c, x0, b - h * SCOPE_BARS[i], x1, b, 1.5f, if (lit) accent else faint)
+				}
+			}
+			MainActivity.FX_BEND_CIRCUIT, MainActivity.FX_BEND_CHAOS, MainActivity.FX_BEND_CLOCK, MainActivity.FX_BEND_GRIT,
+			MainActivity.FX_BEND_FEEDBACK, MainActivity.FX_BEND_SIZE, MainActivity.FX_BEND_MIX -> bentWave(c, fx, accent, faint)
 			MainActivity.FX_VOLUME -> {
 				rect(c, l, b - 10, r, b, 2f, faint)
 				rect(c, l, b - 10, l + w * value / 100f, b, 2f, accent)
 			}
 		}
 		paint.strokeCap = Paint.Cap.BUTT; paint.style = Paint.Style.FILL
+	}
+
+	/** A sketch of a sine wave pushed through the bent circuit: each glitch window shows that circuit's damage. */
+	private fun bentWave(c: Canvas, fx: Sequencer.Effects, accent: Int, faint: Int) {
+		val rate = CircuitBend.clockRate(fx.bendClock).toFloat()
+		val count = Math.round(fx.bendChaos / 100f * VISUAL_BEND_GLITCHES)
+		val width = VISUAL_BEND_MIN_WIDTH + VISUAL_BEND_WIDTH_RANGE * (fx.bendSize - CircuitBend.MIN_SIZE_MS) / (CircuitBend.MAX_SIZE_MS - CircuitBend.MIN_SIZE_MS).toFloat()
+		val random = Random(fx.bendCircuit * 977L + 13)
+		val starts = FloatArray(count) { (it + 0.15f + 0.5f * random.nextFloat()) / count * (1 - width) }
+		val types = IntArray(count) { if (fx.bendCircuit == CircuitBend.CHAOS) random.nextInt(CircuitBend.CHAOS) else fx.bendCircuit }
+		val ring = fx.bendFeedback / 100f
+		val grit = fx.bendGrit / 100f
+		val mix = fx.bendMix / 100f
+		val clean = { u: Float -> sin(u * 4 * PI.toFloat() * rate) }
+		line(c, VISUAL_LEFT, (VISUAL_TOP + VISUAL_BOTTOM) / 2, VISUAL_RIGHT, (VISUAL_TOP + VISUAL_BOTTOM) / 2, faint, 0.6f)
+		curve(c, accent, false) { u ->
+			val dry = clean(u)
+			val k = starts.indices.firstOrNull { u >= starts[it] && u < starts[it] + width }
+			var y = if (k == null) dry else {
+				val s = starts[k]
+				when (types[k]) {
+					CircuitBend.STUTTER -> clean(s + (u - s) % (width / 3))
+					CircuitBend.CLOCK -> clean(s + (u - s) * 2.5f)
+					CircuitBend.SHORT -> clean(s + kotlin.math.floor((u - s) / (width / 4)) * (width / 4)) * -1f
+					CircuitBend.HOWL -> dry * 0.4f + 0.6f * sin((u - s) * 80 * PI.toFloat())
+					else -> dry * (1 - (u - s) / width) * 0.3f
+				}
+			}
+			y += ring * 0.35f * sin(u * 40 * PI.toFloat()) * (0.5f + 0.5f * dry)
+			if (grit > 0) { val steps = 2 + (1 - grit) * 10; y = Math.round(y * steps) / steps }
+			0.5f + 0.42f * (dry + (y - dry) * mix).coerceIn(-1f, 1f)
+		}
 	}
 
 	private fun synthVisual(c: Canvas, parameter: Int) {
@@ -2523,7 +2820,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 	}
 
 	private fun stroke(c: Canvas, path: Path, color: Int, width: Float) {
-		paint.color = color; paint.strokeWidth = width * lineWeight; paint.style = Paint.Style.STROKE; paint.strokeJoin = Paint.Join.ROUND
+		paint.color = screenInk(color); paint.strokeWidth = width * lineWeight; paint.style = Paint.Style.STROKE; paint.strokeJoin = Paint.Join.ROUND
 		c.drawPath(path, paint)
 		paint.style = Paint.Style.FILL
 	}
@@ -2920,6 +3217,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 				val dy = (i / PAD_COLUMNS - target / PAD_COLUMNS) * PAD_PITCH
 				if (hypot(dx, dy) <= SPREAD_RADIUS * ease(elapsed / SPREAD_MILLIS.toFloat())) base = app.sequencer.page(target).color
 			}
+			base = padGlitchColor(base, i)
 			raisedButton(c, x, y, PAD_WIDTH, PAD_HEIGHT, base, tint(base, WHITE, if (editing) 0.40f else if (on) 0.22f else 0.10f),
 				if (editing) tint(base, WHITE, 0.22f) else if (on) base else tint(base, BLACK, 0.08f), depression)
 			val marked = pages && (i == app.pageCursor || i == app.moveSource)
@@ -3013,6 +3311,12 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		val radius = hypot(x - WHEEL_X, y - WHEEL_Y)
 		when (event.actionMasked) {
 			MotionEvent.ACTION_DOWN -> {
+				hatchTap = glitchHatch && insertStart < 0 && app.mode != Mode.BACK && onHatch(px, py)
+				if (hatchTap) {
+					backTap = false; wheelDown = false; pressed = -1; pressedTrack = -1
+					pressedPlay = false; pressedZoom = false; zoomHolding = false
+					return true
+				}
 				if (insertStart >= 0 || app.mode == Mode.BACK || !app.powered()) {
 					backTap = insertStart < 0 && (app.mode != Mode.BACK || SystemClock.uptimeMillis() - flipStart >= FLIP_MILLIS)
 					return true
@@ -3078,6 +3382,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 				} else if (hypot(x - downX, y - downY) > DRAG_CANCEL_DISTANCE) { pressed = -1; pressedTrack = -1; removeCallbacks(hold) }
 			}
 			MotionEvent.ACTION_UP -> {
+				if (hatchTap) {
+					hatchTap = false
+					if (onHatch(px, py)) glitchHatch = false
+					invalidate(); return true
+				}
 				if (backTap) {
 					backTap = false
 					if (app.mode == Mode.BACK) backTap(px, py) else app.showBack()
@@ -3094,6 +3403,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 					} else app.wheelSide(if (x < WHEEL_X) -1 else 1)
 				}
 				if (!held && !zoomHolding && !wheelDown && still) {
+					if (onScreenGlass(px, py)) {
+						val now = SystemClock.uptimeMillis()
+						stripeGlitch.clear(now); inkGlitch.clear(now)
+						invalidate()
+					}
 					when {
 						pressed >= 0 && padAt(px, py) == pressed -> app.pad(pressed)
 						pressedPlay && playAt(x, y) -> app.wheelPlay()
@@ -3165,7 +3479,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 	}
 
 	private fun text(c: Canvas, value: String, x: Float, y: Float, size: Float, color: Int, font: Typeface?) {
-		paint.color = color; paint.textSize = size; paint.typeface = font; paint.style = Paint.Style.FILL
+		paint.color = screenInk(color, value.hashCode()); paint.textSize = size; paint.typeface = font; paint.style = Paint.Style.FILL
 		val width = (if (drawingScreen) LCD_RIGHT + 1 else UI_WIDTH - 1) - x
 		val shown = TextUtils.ellipsize(value, paint, max(0f, width), TextUtils.TruncateAt.END).toString()
 		c.drawText(shown, x, y, paint)
@@ -3188,7 +3502,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 	}
 
 	private fun rect(c: Canvas, left: Float, top: Float, right: Float, bottom: Float, radius: Float, color: Int) {
-		paint.color = color; paint.style = Paint.Style.FILL
+		paint.color = screenInk(color); paint.style = Paint.Style.FILL
 		c.drawRoundRect(left, top, right, bottom, radius, radius, paint)
 	}
 
@@ -3197,7 +3511,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 	}
 
 	private fun line(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, color: Int, width: Float) {
-		paint.color = color; paint.strokeWidth = width * lineWeight; c.drawLine(x1, y1, x2, y2, paint)
+		paint.color = screenInk(color); paint.strokeWidth = width * lineWeight; c.drawLine(x1, y1, x2, y2, paint)
 	}
 
 	private fun tint(color: Int, target: Int, amount: Float) = Color.rgb(
@@ -3271,7 +3585,7 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		private val LCD = Color.rgb(190, 211, 148)
 		private const val LCD_DARK = 0xff101a16.toInt()
 		private const val LCD_DIM = 0xff4d5a45.toInt()
-		private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060, 0xff85e5c4, 0xff70c9c6, 0xffe0a0e8, 0xfff2d27a).map { it.toInt() }.toIntArray()
+		private val EFFECT_COLORS = longArrayOf(0xff8ad9ec, 0xffc79be0, 0xff7fd0a8, 0xff7fa8e8, 0xffeb7a5a, 0xffe8c15a, 0xffd68f9f, 0xffd9d9c8, 0xff9fc7c0, 0xfff6a6a6, 0xfff08fd0, 0xffb4e06a, 0xffa9a4ee, 0xffe8d0a0, 0xff9fe0d0, 0xfff0b060, 0xff85e5c4, 0xff70c9c6, 0xffe0a0e8, 0xfff2d27a, 0xffd4f05a).map { it.toInt() }.toIntArray()
 		private const val STACK_ROWS = 4
 		private const val SHELF_SPACING = 330f
 		private const val SHELF_SPEED = 12f
@@ -3312,6 +3626,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		private const val HATCH_T = -1f
 		private const val HATCH_B = 243f
 		private const val HATCH_DEGREES = 20f
+		private const val NO_TAPE_BROWSER_Y = 170f
+		/** Chance per circuit-bend audio glitch event that the hatch pops open on its own. */
+		private const val HATCH_GLITCH_ODDS = 1.0 / 100_000
 		private const val CASSETTE_W = 300f
 		private const val CASSETTE_H = 188f
 		private const val DEVICE_DEPTH = 97f
@@ -3419,6 +3736,70 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		private const val VISUAL_TOP = 120f
 		private const val VISUAL_BOTTOM = 176f
 		private const val VISUAL_POINTS = 64
+		private const val VISUAL_BEND_GLITCHES = 4
+		private const val VISUAL_BEND_MIN_WIDTH = 0.06f
+		private const val VISUAL_BEND_WIDTH_RANGE = 0.16f
+		private val SCOPE_BARS = floatArrayOf(0.55f, 0.8f, 0.4f, 0.95f, 0.6f, 0.75f, 0.45f, 0.85f)
+		// Rare display glitches. Each kind has its own dice odds per audio glitch, cooldown, normal length,
+		// and a chance to get "stuck" (hold still for longer).
+		private const val STRIPE_ODDS = 0.06f
+		private const val STRIPE_COOLDOWN_MILLIS = 10_000L
+		private const val STRIPE_MIN_MILLIS = 300L
+		private const val STRIPE_EXTRA_MILLIS = 900
+		private const val STRIPE_STUCK_ODDS = 0.2f
+		private const val STRIPE_STUCK_MIN_MILLIS = 2_000L
+		private const val STRIPE_STUCK_EXTRA_MILLIS = 4_000
+		// The one-color block covers the right 15-55% of the LCD; thin stripes are faint extras.
+		private const val BLOCK_MIN_SHARE = 0.15f
+		private const val BLOCK_EXTRA_SHARE = 0.4f
+		private const val STRIPE_MAX_COUNT = 2
+		private const val STRIPE_MIN_ALPHA = 40
+		private const val STRIPE_EXTRA_ALPHA = 50
+		private const val PAD_ODDS = 0.06f
+		private const val PAD_COOLDOWN_MILLIS = 14_000L
+		private const val PAD_MIN_MILLIS = 500L
+		private const val PAD_EXTRA_MILLIS = 1_500
+		private const val PAD_STUCK_ODDS = 0.2f
+		private const val PAD_STUCK_MIN_MILLIS = 2_000L
+		private const val PAD_STUCK_EXTRA_MILLIS = 2_500
+		// Pad scripts: 1-3 pads picked (more with heat), each changing color up to 4 times; some flip back to normal,
+		// and when the glitch ends some stay stuck.
+		private const val PAD_BASE_PICKS = 3
+		private const val GLITCH_HEAT_PADS = 5f
+		private const val PAD_MAX_FLIPS = 4
+		private const val PAD_BACK_ODDS = 0.3f
+		private const val PAD_STICK_ODDS = 0.45f
+		private const val INK_ODDS = 0.08f
+		private const val INK_COOLDOWN_MILLIS = 12_000L
+		private const val INK_MIN_MILLIS = 150L
+		private const val INK_EXTRA_MILLIS = 450
+		private const val INK_STUCK_ODDS = 0.3f
+		private const val INK_STUCK_MIN_MILLIS = 2_000L
+		private const val INK_STUCK_EXTRA_MILLIS = 2_500
+		// Share of screen texts that keep their glitch color afterwards. For pads it only switches leftovers on:
+		// which pads stay stuck is decided by each pad's own script (PAD_STICK_ODDS).
+		private const val PAD_RESIDUE_SHARE = 0.1f
+		private const val INK_RESIDUE_SHARE = 0.1f
+		private const val NO_RESIDUE_KEY = Int.MIN_VALUE
+		// Glitch heat (bend Feedback x Mix x Chaos): how much it amps everything up.
+		private const val GLITCH_OTHER_WEIGHT = 0.25f
+		private const val GLITCH_FULL_HEAT = 0.999f
+		private const val GLITCH_SPONTANEOUS = 0.05f
+		private const val GLITCH_HEAT_LENGTH = 2f
+		private const val GLITCH_HEAT_RESIDUE = 0.3f
+		private const val GLITCH_HEAT_STRIPES = 2f
+		private const val GLITCH_MAX_SHARE = 0.8f
+		private const val GLITCH_MIN_GAP_MILLIS = 150L
+		private const val GLITCH_GAP_EXTRA_MILLIS = 350
+		private const val GLITCH_CLEAR_QUIET_MILLIS = 1_500L
+		// Of those, this share stays until the next glitch; the rest fade back after a random 2-20 seconds.
+		private const val RESIDUE_FOREVER_SHARE = 0.4f
+		private const val RESIDUE_MIN_MILLIS = 2_000L
+		private const val RESIDUE_EXTRA_MILLIS = 18_000L
+		private const val GLITCH_FRAME_MILLIS = 40L
+		private const val GLITCH_INK_SHARE = 0.35f
+		private const val GLITCH_INK_SALT = 1000
+		private val GLITCH_COLORS = intArrayOf(0xffff2e9a.toInt(), 0xff1effe0.toInt(), 0xff6bff2e.toInt(), 0xfffff12e.toInt(), 0xff5a3cff.toInt())
 		private const val VISUAL_CRUSH_HZ = 440f
 		private const val VISUAL_CRUSH_CYCLES = 2
 		private const val VISUAL_CRUSH_HEIGHT = 0.45f
@@ -3458,6 +3839,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 			MainActivity.FX_DRIVE to MenuIcon.DRIVE, MainActivity.FX_CRUSH_BITS to MenuIcon.BITS, MainActivity.FX_AUTO_SCALE to MenuIcon.SCALE, MainActivity.FX_AUTO_KEY to MenuIcon.KEYS, MainActivity.FX_EVERY_PASS to MenuIcon.PICK_PASS,
 			MainActivity.FX_ROBOT_MORPH to MenuIcon.MORPH, MainActivity.FX_WOBBLE_DEPTH to MenuIcon.DEPTH,
 			MainActivity.FX_CHOIR_DETUNE to MenuIcon.DETUNE, MainActivity.FX_CHOIR_OFFSET to MenuIcon.OFFSET,
+			MainActivity.FX_BEND_MIX to MenuIcon.MIX, MainActivity.FX_BEND_SIZE to MenuIcon.LENGTH, MainActivity.FX_BEND_GRIT to MenuIcon.BITS,
+			MainActivity.FX_BEND_FEEDBACK to MenuIcon.LOOP, MainActivity.FX_BEND_CLOCK to MenuIcon.SPEED,
 			MainActivity.FX_ATTACK to MenuIcon.ATTACK, MainActivity.FX_DECAY to MenuIcon.DECAY, MainActivity.FX_SUSTAIN to MenuIcon.SUSTAIN, MainActivity.FX_RELEASE to MenuIcon.RELEASE
 		)
 		private val MENU_ICONS = mapOf(

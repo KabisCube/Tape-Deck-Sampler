@@ -25,3 +25,4 @@ desktop.ini
 tools/render-previews.ps1
 app/src/androidTest/java/com/tapedecksampler/app/PreviewShots.java
 tools/preview-runner.init.gradle
+demo/

@@ -43,6 +43,8 @@ public final class TrackEffects {
 	private float[] delay;
 	private int delayPosition;
 	private boolean delayActive;
+	private final CircuitBend bend = new CircuitBend();
+	private boolean bending;
 
 	public TrackEffects() {
 		for (int i = 0; i < combs.length; i++) combs[i] = new float[COMB_LENGTHS[i]];
@@ -55,7 +57,8 @@ public final class TrackEffects {
 				|| controls.powered(Sequencer.Effects.BAND_PASS) && controls.bandPass > 0
 				|| controls.powered(Sequencer.Effects.DISTORTION) && controls.distortion != 0 && controls.distortionMix > 0
 				|| controls.powered(Sequencer.Effects.REVERB) && controls.reverb > 0
-				|| controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0) return true;
+				|| controls.powered(Sequencer.Effects.DELAY) && controls.delayMix > 0
+				|| controls.bendsTrack()) return true;
 		process(0, controls, Sequencer.DEFAULT_BPM);
 		return false;
 	}
@@ -81,6 +84,7 @@ public final class TrackEffects {
 					break;
 				case Sequencer.Effects.REVERB: value = reverb(value, controls.powered(group) ? controls.reverb : 0); break;
 				case Sequencer.Effects.DELAY: value = delay(value, controls, bpm); break;
+				case Sequencer.Effects.BEND: value = bend(value, controls); break;
 				default: break;
 			}
 		}
@@ -155,6 +159,14 @@ public final class TrackEffects {
 		}
 		return value;
 	}
+
+	private float bend(float value, Sequencer.Effects controls) {
+		if (controls.bendsTrack()) { bending = true; return bend.process(value, controls); }
+		if (bending) { bend.reset(); bending = false; }
+		return value;
+	}
+
+	public int takeBendEvents(int type) { return bend.takeEvents(type); }
 
 	private static float coefficient(int frequency) {
 		return (float) (1 - Math.exp(-2 * Math.PI * Math.max(0, Math.min(MAX_FILTER_HZ, frequency)) / Tape.RATE));
@@ -286,6 +298,7 @@ public final class TrackEffects {
 		if (delay != null) Arrays.fill(delay, 0);
 		delayPosition = 0; delayActive = false;
 		highFilter.reset(); lowFilter.reset(); bandFilter.reset();
+		bend.reset(); bending = false;
 		held = 0; crushPhase = 1;
 		inputPower = outputPower = 0;
 		previousType = previousDrive = previousMix = previousBits = previousRate = -1;

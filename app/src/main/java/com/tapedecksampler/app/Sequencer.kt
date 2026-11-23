@@ -56,6 +56,14 @@ class Sequencer(private val tape: Tape) {
 		@JvmField var choirCopies = ChoirEffect.DEFAULT_COPIES
 		@JvmField var choirDetune = ChoirEffect.DEFAULT_DETUNE
 		@JvmField var choirOffset = ChoirEffect.DEFAULT_OFFSET_MS
+		@JvmField var bendCircuit = CircuitBend.DEFAULT_CIRCUIT
+		@JvmField var bendScope = CircuitBend.DEFAULT_SCOPE
+		@JvmField var bendChaos = CircuitBend.DEFAULT_CHAOS
+		@JvmField var bendClock = CircuitBend.NEUTRAL_CLOCK
+		@JvmField var bendGrit = CircuitBend.DEFAULT_GRIT
+		@JvmField var bendFeedback = CircuitBend.DEFAULT_FEEDBACK
+		@JvmField var bendSize = CircuitBend.DEFAULT_SIZE_MS
+		@JvmField var bendMix = CircuitBend.DEFAULT_MIX
 		@JvmField var effectPower = 0
 		@JvmField var effectPowerSet = 0
 		@JvmField var custom = 0
@@ -82,6 +90,8 @@ class Sequencer(private val tape: Tape) {
 				WOBBLE -> wobbleMode == other.wobbleMode && wobbleRate == other.wobbleRate && wobbleDepth == other.wobbleDepth
 				SHIFT -> trimStart == other.trimStart && trimEnd == other.trimEnd
 				CHOIR -> choirCopies == other.choirCopies && choirDetune == other.choirDetune && choirOffset == other.choirOffset
+				BEND -> bendCircuit == other.bendCircuit && bendScope == other.bendScope && bendChaos == other.bendChaos && bendClock == other.bendClock
+					&& bendGrit == other.bendGrit && bendFeedback == other.bendFeedback && bendSize == other.bendSize && bendMix == other.bendMix
 				VOLUME -> gain == other.gain
 				PITCH -> pitch == other.pitch
 				else -> true
@@ -149,6 +159,7 @@ class Sequencer(private val tape: Tape) {
 				if (low < 0) return
 				expanded.add(low + 1, BAND_PASS)
 			}
+			if (expanded.size == BAND_CHAIN_LENGTH && BEND !in expanded) expanded.add(BEND)
 			val order = expanded.toIntArray()
 			if (order.size != CHAIN_LENGTH) return
 			var seen = 0
@@ -250,6 +261,20 @@ class Sequencer(private val tape: Tape) {
 
 		fun hasChoir(): Boolean = powered(CHOIR) && choirCopies > 0
 
+		fun bendsTrack(): Boolean = powered(BEND) && bendMix > 0 && bendScope != CircuitBend.DEVICE
+
+		fun bendsDevice(): Boolean = powered(BEND) && bendMix > 0 && bendScope == CircuitBend.DEVICE
+
+		private fun resetBend() {
+			bendCircuit = CircuitBend.DEFAULT_CIRCUIT; bendScope = CircuitBend.DEFAULT_SCOPE; bendChaos = CircuitBend.DEFAULT_CHAOS; bendClock = CircuitBend.NEUTRAL_CLOCK
+			bendGrit = CircuitBend.DEFAULT_GRIT; bendFeedback = CircuitBend.DEFAULT_FEEDBACK; bendSize = CircuitBend.DEFAULT_SIZE_MS; bendMix = CircuitBend.DEFAULT_MIX
+		}
+
+		private fun copyBend(source: Effects) {
+			bendCircuit = source.bendCircuit; bendScope = source.bendScope; bendChaos = source.bendChaos; bendClock = source.bendClock
+			bendGrit = source.bendGrit; bendFeedback = source.bendFeedback; bendSize = source.bendSize; bendMix = source.bendMix
+		}
+
 		fun hasAutotune(): Boolean = powered(AUTOTUNE) && autoStrength > 0 && autoMix > 0
 
 		fun resetGroup(group: Int) {
@@ -272,6 +297,7 @@ class Sequencer(private val tape: Tape) {
 				SHIFT -> { trimStart = 0; trimEnd = 0; prepared = null }
 				REVERSE -> prepared = null
 				CHOIR -> { choirCopies = ChoirEffect.DEFAULT_COPIES; choirDetune = ChoirEffect.DEFAULT_DETUNE; choirOffset = ChoirEffect.DEFAULT_OFFSET_MS; prepared = null }
+				BEND -> resetBend()
 				VOLUME -> gain = neutralGain
 				PITCH -> { pitch = 0; prepared = null }
 				else -> throw IllegalArgumentException("Unknown effect group")
@@ -307,6 +333,7 @@ class Sequencer(private val tape: Tape) {
 				SHIFT -> { trimStart = source.trimStart; trimEnd = source.trimEnd; prepared = null }
 				REVERSE -> prepared = null
 				CHOIR -> { choirCopies = source.choirCopies; choirDetune = source.choirDetune; choirOffset = source.choirOffset; prepared = null }
+				BEND -> copyBend(source)
 				VOLUME -> gain = source.gain
 				PITCH -> { pitch = source.pitch; prepared = null }
 				else -> throw IllegalArgumentException("Unknown effect group")
@@ -336,6 +363,7 @@ class Sequencer(private val tape: Tape) {
 			wobbleMode = source.wobbleMode; wobbleRate = source.wobbleRate; wobbleDepth = source.wobbleDepth
 			trimStart = source.trimStart; trimEnd = source.trimEnd
 			choirCopies = source.choirCopies; choirDetune = source.choirDetune; choirOffset = source.choirOffset
+			copyBend(source)
 			custom = source.custom
 		}
 
@@ -363,10 +391,12 @@ class Sequencer(private val tape: Tape) {
 			const val BAND_PASS = 17
 			const val REVERSE = 18
 			const val CHOIR = 19
-			const val GROUPS = 20
+			const val BEND = 20
+			const val GROUPS = 21
 			private const val LEGACY_CHAIN_LENGTH = 4
 			const val SPLIT_CHAIN_LENGTH = 5
-			const val CHAIN_LENGTH = 6
+			private const val BAND_CHAIN_LENGTH = 6
+			const val CHAIN_LENGTH = 7
 			const val CHAIN_BIT = 1 shl 30
 			const val DEFAULT_GAIN = 0.8f
 			const val DEFAULT_DRIVE = 40
@@ -386,7 +416,7 @@ class Sequencer(private val tape: Tape) {
 			private const val ON_EVERY = 2
 			const val LAST_PASS = 0
 			private const val ON_WOBBLE_DEPTH = 50
-			private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, BAND_PASS, DISTORTION, REVERB, DELAY)
+			private val DEFAULT_CHAIN = intArrayOf(HIGH_PASS, LOW_PASS, BAND_PASS, DISTORTION, REVERB, DELAY, BEND)
 			private val SOURCE_STAGE = intArrayOf(CHANCE, EVERY, SHIFT, SAMPLE, PITCH, ROBOT, AUTOTUNE, CHOIR, REVERSE, SWING, NUDGE, WOBBLE, ENVELOPE)
 			private val OUTPUT_STAGE = intArrayOf(VOLUME)
 
@@ -394,7 +424,7 @@ class Sequencer(private val tape: Tape) {
 
 			@JvmStatic fun inherits(group: Int): Boolean = group != VOLUME && group != SWING && group != NUDGE
 
-			@JvmStatic fun movable(group: Int): Boolean = group == HIGH_PASS || group == LOW_PASS || group == BAND_PASS || group == DELAY || group == DISTORTION || group == REVERB
+			@JvmStatic fun movable(group: Int): Boolean = group == HIGH_PASS || group == LOW_PASS || group == BAND_PASS || group == DELAY || group == DISTORTION || group == REVERB || group == BEND
 		}
 	}
 
@@ -481,6 +511,12 @@ class Sequencer(private val tape: Tape) {
 	@JvmField val tracks = Array(TRACKS) { Track() }
 	@JvmField val mixerLevels = FloatArray(TRACKS) { FULL_MIXER_LEVEL }
 	private val effects = Array(TRACKS) { TrackEffects() }
+	private val deviceBend = CircuitBend()
+	private var deviceBending = false
+	/** Running count of circuit-bend glitch events per kind (CircuitBend.STUTTER..BATTERY); the UI reads it for the rare display glitches. */
+	@JvmField val bendEvents = java.util.concurrent.atomic.AtomicLongArray(CircuitBend.CHAOS)
+	/** Feedback x Mix x Chaos (0..1) of the hottest unmuted circuit bend; the UI turns its visual glitches up with it. */
+	@Volatile @JvmField var bendHeat = 0f
 	private val mix = FloatArray(TRACKS)
 	private val processing = BooleanArray(TRACKS)
 	private val voices = ArrayList<Voice>()
@@ -685,6 +721,7 @@ class Sequencer(private val tape: Tape) {
 		for (effect in effects) effect.reset()
 		for (bus in activeBuses) { bus.effects.reset(); bus.active = false }
 		activeBuses.clear()
+		deviceBend.reset(); deviceBending = false
 	}
 
 	@Synchronized fun isPlaying(): Boolean = running
@@ -927,6 +964,7 @@ class Sequencer(private val tape: Tape) {
 
 	private fun render(output: ShortArray, synced: Boolean, firstSyncNanos: Long, nanosPerFrame: Double, ready: Boolean) {
 		synchronized(tape) {
+			bendHeat = bendHeat()
 			if ((syncWaiting || running) && synced) {
 				if (!ready || !nanosPerFrame.isFinite() || nanosPerFrame <= 0) {
 					if (running) playSynced()
@@ -954,6 +992,9 @@ class Sequencer(private val tape: Tape) {
 				val bus = activeBuses[index]
 				bus.processing = bus.effects.prepareBlock(bus.controls)
 			}
+			val device = deviceBendControls()
+			if (device == null && deviceBending) { deviceBend.reset(); deviceBending = false }
+			if (device != null) deviceBending = true
 			for (i in output.indices) {
 				var tick = 0L
 				if (clockDriven) {
@@ -1011,14 +1052,44 @@ class Sequencer(private val tape: Tape) {
 					if (bus.step < 0) sum += value * controls.gain * mixerLevel
 					else if (!controls.mute) sum += value * controls.gain * trackControls(bus.owner, bus.track).gain * mixerLevel
 				}
+				if (device != null) sum = deviceBend.process(sum, device)
 				output[i] = Math.round(limited(sum) * Tape.PCM_SCALE).toShort()
 				if (running && !clockDriven) untilStep--
+			}
+			for (type in 0 until CircuitBend.CHAOS) {
+				var glitches = deviceBend.takeEvents(type)
+				for (effect in effects) glitches += effect.takeBendEvents(type)
+				for (index in activeBuses.indices) glitches += activeBuses[index].effects.takeBendEvents(type)
+				if (glitches > 0) bendEvents.addAndGet(type, glitches.toLong())
 			}
 			activeBuses.removeAll { bus ->
 				if (bus.silentFrames < Tape.RATE * BUS_IDLE_SECONDS) false
 				else { bus.effects.reset(); bus.active = false; true }
 			}
 		}
+	}
+
+	private fun bendHeat(): Float {
+		var heat = 0f
+		for (track in tracks) if (!track.mute) heat = maxOf(heat, heatOf(track))
+		for (index in activeBuses.indices) {
+			val bus = activeBuses[index]
+			if (!tracks[bus.track].mute) heat = maxOf(heat, heatOf(bus.controls))
+		}
+		return heat
+	}
+
+	private fun heatOf(controls: Effects): Float =
+		if (controls.powered(Effects.BEND)) controls.bendFeedback * controls.bendMix * controls.bendChaos / 1_000_000f else 0f
+
+	/** The first unmuted track (or ringing pad) whose Bend scope is Device glitches the whole mix. */
+	private fun deviceBendControls(): Effects? {
+		for (track in tracks) if (!track.mute && track.bendsDevice()) return track
+		for (index in activeBuses.indices) {
+			val bus = activeBuses[index]
+			if (!tracks[bus.track].mute && bus.controls.bendsDevice()) return bus.controls
+		}
+		return null
 	}
 
 	private fun limited(sample: Float): Float {

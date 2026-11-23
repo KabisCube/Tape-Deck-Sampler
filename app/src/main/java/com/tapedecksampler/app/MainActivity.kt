@@ -28,6 +28,7 @@ import android.provider.Settings
 import android.text.Selection
 import android.text.SpannableStringBuilder
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
@@ -427,9 +428,26 @@ class MainActivity : Activity(), AudioEngine.Listener {
 			}
 			instrument = InstrumentView(this)
 			if (firstRun) instrument.introCassette(session.name(), cassetteColor(session))
+			// Fullscreen hides the bars, but the deck keeps the size it had with them: it's padded by the bars' sizes
+			// even while hidden. That room is split evenly top and bottom so the deck sits centered, while the top
+			// always stays clear of the camera cutout.
 			instrument.setOnApplyWindowInsetsListener { view, insets ->
-				@Suppress("DEPRECATION")
-				view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+				val left: Int; val top: Int; val right: Int; val bottom: Int; val cutoutTop: Int
+				if (Build.VERSION.SDK_INT >= 30) {
+					val room = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+					left = room.left; top = room.top; right = room.right; bottom = room.bottom
+					cutoutTop = insets.getInsets(WindowInsets.Type.displayCutout()).top
+				} else {
+					@Suppress("DEPRECATION")
+					val cutout = if (Build.VERSION.SDK_INT >= 28) insets.displayCutout else null
+					@Suppress("DEPRECATION")
+					left = max(insets.stableInsetLeft, cutout?.safeInsetLeft ?: 0); @Suppress("DEPRECATION") top = max(insets.stableInsetTop, cutout?.safeInsetTop ?: 0)
+					@Suppress("DEPRECATION")
+					right = max(insets.stableInsetRight, cutout?.safeInsetRight ?: 0); @Suppress("DEPRECATION") bottom = max(insets.stableInsetBottom, cutout?.safeInsetBottom ?: 0)
+					cutoutTop = cutout?.safeInsetTop ?: 0
+				}
+				val centeredTop = max(cutoutTop, (top + bottom) / 2)
+				view.setPadding(left, centeredTop, right, top + bottom - centeredTop)
 				insets
 			}
 			setContentView(instrument)
@@ -449,6 +467,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		foreground = true
 		resumedAt = SystemClock.uptimeMillis()
 		applySystemTheme()
+		hideSystemBars()
 		if (clapClock != null) {
 			clapClock = ClapClock(System.nanoTime() - (SystemClock.elapsedRealtimeNanos() - clapBootOrigin))
 			audio.setClapClock(clapClock)
@@ -777,6 +796,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		controls.choirCopies = json.optInt("choirCopies", ChoirEffect.DEFAULT_COPIES).coerceIn(ChoirEffect.MIN_COPIES, ChoirEffect.MAX_COPIES)
 		controls.choirDetune = json.optInt("choirDetune", ChoirEffect.DEFAULT_DETUNE).coerceIn(0, ChoirEffect.MAX_DETUNE)
 		controls.choirOffset = json.optInt("choirOffset", ChoirEffect.DEFAULT_OFFSET_MS).coerceIn(0, ChoirEffect.MAX_OFFSET_MS)
+		controls.bendCircuit = json.optInt("bendCircuit", CircuitBend.DEFAULT_CIRCUIT).coerceIn(0, CircuitBend.CIRCUITS.size - 1)
+		controls.bendScope = json.optInt("bendScope", CircuitBend.DEFAULT_SCOPE).coerceIn(0, CircuitBend.SCOPES.size - 1)
+		controls.bendChaos = json.optInt("bendChaos", CircuitBend.DEFAULT_CHAOS).coerceIn(0, 100)
+		controls.bendClock = json.optInt("bendClock", CircuitBend.NEUTRAL_CLOCK).coerceIn(0, 100)
+		controls.bendGrit = json.optInt("bendGrit", CircuitBend.DEFAULT_GRIT).coerceIn(0, 100)
+		controls.bendFeedback = json.optInt("bendFeedback", CircuitBend.DEFAULT_FEEDBACK).coerceIn(0, 100)
+		controls.bendSize = json.optInt("bendSize", CircuitBend.DEFAULT_SIZE_MS).coerceIn(CircuitBend.MIN_SIZE_MS, CircuitBend.MAX_SIZE_MS)
+		controls.bendMix = json.optInt("bendMix", CircuitBend.DEFAULT_MIX).coerceIn(0, 100)
 		val chain = json.optJSONArray("chain")
 		if (chain == null || chain.length() < Sequencer.Effects.SPLIT_CHAIN_LENGTH) controls.splitGroups()
 		if (chain != null) controls.restoreOrder(IntArray(chain.length()) { chain.optInt(it) })
@@ -809,7 +836,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
 			.put("robotMorph", controls.robotMorph).put("robotMix", controls.robotMix)
 			.put("effectPower", controls.effectPower).put("effectPowerSet", controls.effectPowerSet)
 			.put("trimStart", controls.trimStart).put("trimEnd", controls.trimEnd)
-			.put("choirCopies", controls.choirCopies).put("choirDetune", controls.choirDetune).put("choirOffset", controls.choirOffset).put("custom", controls.custom).put("fxVersion", FX_VERSION)
+			.put("choirCopies", controls.choirCopies).put("choirDetune", controls.choirDetune).put("choirOffset", controls.choirOffset)
+			.put("bendCircuit", controls.bendCircuit).put("bendScope", controls.bendScope).put("bendChaos", controls.bendChaos).put("bendClock", controls.bendClock)
+			.put("bendGrit", controls.bendGrit).put("bendFeedback", controls.bendFeedback).put("bendSize", controls.bendSize).put("bendMix", controls.bendMix)
+			.put("custom", controls.custom).put("fxVersion", FX_VERSION)
 	}
 
 	private fun effectOrNull(controls: Sequencer.Effects?): Any = if (controls == null) JSONObject.NULL else effectData(controls)
@@ -1089,7 +1119,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 	}
 
 	private fun openProject(target: SessionStore.Entry) {
-		if (target.id == session.id) { mode = if (openFromMenu) Mode.PROJECTS else Mode.HOME; selection = 0; return }
+		if (target.id == session.id && !noTape) { mode = if (openFromMenu) Mode.PROJECTS else Mode.HOME; selection = 0; return }
 		menuAfterLoad = openFromMenu
 		instrument.insertCassette(target.name(), cassetteColor(target), deckName(), cassetteColor(session))
 		switchSession(target, "", -1, null)
@@ -1128,6 +1158,19 @@ class MainActivity : Activity(), AudioEngine.Listener {
 
 	private fun deckName(): String? = if (noTape) null else session.name()
 
+	/**
+	 * Scrolling away from the loaded tape in the Open carousel takes it out of the deck for real: the project is
+	 * saved and stopped and the deck is left empty, the same state as after deleting the loaded tape. Picking that
+	 * tape again loads it like any other.
+	 */
+	fun ejectToShelf() {
+		if (noTape || busy || mode != Mode.PROJECT_OPEN) return
+		save()
+		try { tape.flush() } catch (e: Exception) { error("Could not save the tape") }
+		cancelLive(); sequencer.stop(); audio.stop()
+		noTape = true
+	}
+
 	private fun deleteProject() {
 		val target = editTarget ?: return
 		val remove = Runnable {
@@ -1156,7 +1199,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 	}
 
 	private fun switchSession(target: SessionStore.Entry?, name: String, color: Int, afterClose: Runnable?) {
-		if (busy || mode == Mode.RECORDING || (target != null && target.id == session.id)) {
+		if (busy || mode == Mode.RECORDING || (target != null && target.id == session.id && !noTape)) {
 			if (!busy && mode != Mode.RECORDING && target != null) mode = Mode.HOME
 			menuAfterLoad = false
 			return
@@ -1583,6 +1626,10 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		parameter == FX_CHOIR_COPIES -> if (value == 1) "1 copy" else "$value copies"
 		parameter == FX_CHOIR_DETUNE -> "$value ct"
 		parameter == FX_CHOIR_OFFSET -> "$value ms"
+		parameter == FX_BEND_CIRCUIT -> CircuitBend.CIRCUITS[value.coerceIn(0, CircuitBend.CIRCUITS.size - 1)]
+		parameter == FX_BEND_SCOPE -> CircuitBend.SCOPES[value.coerceIn(0, CircuitBend.SCOPES.size - 1)]
+		parameter == FX_BEND_CLOCK -> String.format(Locale.US, "x%.2f", CircuitBend.clockRate(value))
+		parameter == FX_BEND_SIZE -> "$value ms"
 		else -> "$value%"
 	}
 
@@ -1617,6 +1664,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		FX_CHOIR_COPIES -> "${ChoirEffect.MIN_COPIES}-${ChoirEffect.MAX_COPIES} EXTRA VOICES"
 		FX_CHOIR_DETUNE -> "0-${ChoirEffect.MAX_DETUNE} CENTS / SPREAD UP AND DOWN"
 		FX_CHOIR_OFFSET -> "0-${ChoirEffect.MAX_OFFSET_MS} ms / DELAY BETWEEN COPIES"
+		FX_BEND_CIRCUIT -> CircuitBend.CIRCUIT_HINTS[effectValue.coerceIn(0, CircuitBend.CIRCUIT_HINTS.size - 1)]
+		FX_BEND_SCOPE -> if (effectValue == CircuitBend.DEVICE) "GLITCHES EVERY TRACK ON THE DECK" else "GLITCHES ONLY THIS TRACK"
+		FX_BEND_CHAOS -> "0-100% / HOW OFTEN IT GLITCHES"
+		FX_BEND_CLOCK -> "x1/16 TO x4 / 50% IS STOCK"
+		FX_BEND_GRIT -> "0-100% / DAMAGED DATA LINES"
+		FX_BEND_FEEDBACK -> "0-100% / OUTPUT WIRED BACK IN"
+		FX_BEND_SIZE -> "${CircuitBend.MIN_SIZE_MS}-${CircuitBend.MAX_SIZE_MS} ms / GLITCH CHUNK SIZE"
+		FX_BEND_MIX -> "0% CLEAN / 100% BENT ONLY"
 		else -> "LIVE / SELECT TO SAVE"
 	}
 
@@ -1666,6 +1721,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
 			FX_CHOIR_COPIES -> controls.choirCopies
 			FX_CHOIR_DETUNE -> controls.choirDetune
 			FX_CHOIR_OFFSET -> controls.choirOffset
+			FX_BEND_CIRCUIT -> controls.bendCircuit
+			FX_BEND_SCOPE -> controls.bendScope
+			FX_BEND_CHAOS -> controls.bendChaos
+			FX_BEND_CLOCK -> controls.bendClock
+			FX_BEND_GRIT -> controls.bendGrit
+			FX_BEND_FEEDBACK -> controls.bendFeedback
+			FX_BEND_SIZE -> controls.bendSize
+			FX_BEND_MIX -> controls.bendMix
 			else -> throw IllegalArgumentException("Unknown effect")
 		}
 	}
@@ -1730,6 +1793,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
 				FX_CHOIR_COPIES -> controls.choirCopies = value
 				FX_CHOIR_DETUNE -> controls.choirDetune = value
 				FX_CHOIR_OFFSET -> controls.choirOffset = value
+				FX_BEND_CIRCUIT -> controls.bendCircuit = value
+				FX_BEND_SCOPE -> controls.bendScope = value
+				FX_BEND_CHAOS -> controls.bendChaos = value
+				FX_BEND_CLOCK -> controls.bendClock = value
+				FX_BEND_GRIT -> controls.bendGrit = value
+				FX_BEND_FEEDBACK -> controls.bendFeedback = value
+				FX_BEND_SIZE -> controls.bendSize = value
+				FX_BEND_MIX -> controls.bendMix = value
 			}
 			if (parameter == FX_TRIM_START || parameter == FX_TRIM_END) {
 				val slice = sequencer.tracks[track]
@@ -2040,6 +2111,9 @@ class MainActivity : Activity(), AudioEngine.Listener {
 					FX_CHOIR_COPIES -> (v + delta).coerceIn(ChoirEffect.MIN_COPIES, ChoirEffect.MAX_COPIES)
 					FX_CHOIR_DETUNE -> (v + delta * FAST_STEP).coerceIn(0, ChoirEffect.MAX_DETUNE)
 					FX_CHOIR_OFFSET -> (v + delta * FAST_STEP).coerceIn(0, ChoirEffect.MAX_OFFSET_MS)
+					FX_BEND_CIRCUIT -> (v + delta).coerceIn(0, CircuitBend.CIRCUITS.size - 1)
+					FX_BEND_SCOPE -> (v + delta).coerceIn(0, CircuitBend.SCOPES.size - 1)
+					FX_BEND_SIZE -> (v + delta * FAST_STEP).coerceIn(CircuitBend.MIN_SIZE_MS, CircuitBend.MAX_SIZE_MS)
 					else -> (v + delta).coerceIn(0, 100)
 				}
 				liveEffect(effectParameter, effectValue)
@@ -2555,6 +2629,27 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		speechSamples = null
 		speechRenderedText = ""
 		speechRenderedVoice = -1
+	}
+
+	override fun onWindowFocusChanged(hasFocus: Boolean) {
+		super.onWindowFocusChanged(hasFocus)
+		// The bars come back for the keyboard, file pickers and dialogs; hide them again once we have focus.
+		if (hasFocus) hideSystemBars()
+	}
+
+	/** Fullscreen: hides the status and navigation bars. Swiping in from an edge shows them briefly over the app. */
+	private fun hideSystemBars() {
+		if (Build.VERSION.SDK_INT >= 30) {
+			window.setDecorFitsSystemWindows(false)
+			window.insetsController?.let {
+				it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+				it.hide(WindowInsets.Type.systemBars())
+			}
+		} else {
+			@Suppress("DEPRECATION")
+			window.decorView.systemUiVisibility = window.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+				View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+		}
 	}
 
 	@Suppress("DEPRECATION")
@@ -3187,6 +3282,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		const val FX_CHOIR_DETUNE = 42
 		const val FX_CHOIR_OFFSET = 43
 		const val FX_EVERY_PASS = 44
+		const val FX_BEND_CIRCUIT = 45
+		const val FX_BEND_SCOPE = 46
+		const val FX_BEND_CHAOS = 47
+		const val FX_BEND_CLOCK = 48
+		const val FX_BEND_GRIT = 49
+		const val FX_BEND_FEEDBACK = 50
+		const val FX_BEND_SIZE = 51
+		const val FX_BEND_MIX = 52
 		private const val LEGACY_ROBOT_SCALE = 5
 		@JvmField val MENU = arrayOf("Track effects", "Add sample", "Tempo", "Mixer", "Sync", "Projects", "Settings", "Check the back")
 		@JvmField val EXPORT_ITEMS = arrayOf("As MIDI", "As WAV", "As Project")
@@ -3216,14 +3319,14 @@ class MainActivity : Activity(), AudioEngine.Listener {
 		private val RETIRED_CASSETTE_NAMES = arrayOf("Ruby" to "Laser", "Coral" to "Peach", "Tangerine" to "Blaze", "Lemon" to "Volt", "Lime" to "Toxic",
 			"Mint" to "Seafoam", "Teal" to "Cyber", "Sky" to "Powder", "Ocean" to "Powder", "Grape" to "Lavender")
 		private val OLD_CASSETTE_NAMES = arrayOf("Smoke", "Ruby", "Tangerine", "Lemon", "Mint", "Ocean", "Grape", "Bubblegum", "Clear", "Lime", "Teal", "Sky", "Coral", "Cocoa")
-		@JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE", "CHOIR COPIES", "CHOIR DETUNE", "CHOIR OFFSET", "TRIGGER PLAY ON")
+		@JvmField val FX_LABELS = arrayOf("SAMPLE SPEED", "PITCH", "REVERB", "DISTORTION", "DISTORTION MIX", "VOLUME", "HIGH-PASS", "LOW-PASS", "DELAY TIME", "DELAY ECHOES", "DELAY MIX", "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "AUTOTUNE KEY", "AUTOTUNE SCALE", "AUTOTUNE STRENGTH", "AUTOTUNE RETUNE", "AUTOTUNE MIX", "SWING", "TIMING NUDGE", "TRIGGER CHANCE", "TRIGGER EVERY", "WOBBLE MODE", "WOBBLE RATE", "WOBBLE DEPTH", "SHIFT START", "SHIFT END", "ROBOT VOICE", "", "", "ROBOT MORPH", "ROBOT MIX", "DRIVE", "BIT DEPTH", "SAMPLE RATE", "BAND-PASS", "HIGH-PASS RESONANCE", "LOW-PASS RESONANCE", "BAND-PASS RESONANCE", "CHOIR COPIES", "CHOIR DETUNE", "CHOIR OFFSET", "TRIGGER PLAY ON", "BEND CIRCUIT", "BEND SCOPE", "BEND CHAOS", "BEND CLOCK", "BEND GRIT", "BEND FEEDBACK", "BEND SIZE", "BEND MIX")
 		@JvmField val WOBBLE_MODES = arrayOf("Volume", "Pitch", "Speed")
-		@JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass", "Reverse", "Choir")
-		@JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY")
+		@JvmField val FX_NAMES = arrayOf("Speed", "Autotune", "High-pass", "Delay", "Distortion", "Envelope", "Reverb", "Swing", "Volume", "Shift", "Pitch", "Low-pass", "Nudge", "Chance", "Every Nth", "Wobble", "Robot", "Band-pass", "Reverse", "Choir", "Circuit bend")
+		@JvmField val FX_LOCK_REASONS = arrayOf("PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, null, null, "SHAPES EACH NOTE BEFORE NOTES ARE MIXED", null, "MOVES NOTE TIMING, NOT THE SOUND", "SETS THE TRACK'S FINAL OUTPUT LEVEL", "PICKS WHICH PART OF THE TAPE PLAYS", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "MOVES NOTE TIMING, NOT THE SOUND", "DECIDES IF A NOTE PLAYS AT ALL", "DECIDES IF A NOTE PLAYS AT ALL", "WOBBLES EACH NOTE BEFORE NOTES ARE MIXED", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null, "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", "PRE-RENDERED INTO THE SAMPLE BEFORE PLAY", null)
 		const val ALONE_REASON = "ADD FILTER, DELAY, DIST OR REVERB"
-		@JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.REVERSE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.CHOIR, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
-		@JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY, FX_EVERY_PASS), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE), intArrayOf(), intArrayOf(FX_CHOIR_COPIES, FX_CHOIR_DETUNE, FX_CHOIR_OFFSET))
-		@JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every", "Play on"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"), arrayOf(), arrayOf("Copies", "Detune", "Offset"))
+		@JvmField val FX_ADD_ORDER = intArrayOf(Sequencer.Effects.VOLUME, Sequencer.Effects.PITCH, Sequencer.Effects.SAMPLE, Sequencer.Effects.REVERSE, Sequencer.Effects.ROBOT, Sequencer.Effects.AUTOTUNE, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.BEND, Sequencer.Effects.CHOIR, Sequencer.Effects.ENVELOPE, Sequencer.Effects.WOBBLE, Sequencer.Effects.SWING, Sequencer.Effects.SHIFT, Sequencer.Effects.NUDGE, Sequencer.Effects.CHANCE, Sequencer.Effects.EVERY)
+		@JvmField val FX_GROUP_PARAMETERS = arrayOf(intArrayOf(FX_SPEED), intArrayOf(FX_AUTO_KEY, FX_AUTO_SCALE, FX_AUTO_STRENGTH, FX_AUTO_RETUNE, FX_AUTO_MIX), intArrayOf(FX_HIGH_PASS, FX_HIGH_RESONANCE), intArrayOf(FX_DELAY_TIME, FX_DELAY_FEEDBACK, FX_DELAY_MIX), intArrayOf(FX_DISTORTION, FX_DRIVE, FX_CRUSH_BITS, FX_CRUSH_RATE, FX_DISTORTION_MIX), intArrayOf(FX_ATTACK, FX_DECAY, FX_SUSTAIN, FX_RELEASE), intArrayOf(FX_REVERB), intArrayOf(FX_SWING), intArrayOf(FX_VOLUME), intArrayOf(FX_TRIM_START, FX_TRIM_END), intArrayOf(FX_PITCH), intArrayOf(FX_LOW_PASS, FX_LOW_RESONANCE), intArrayOf(FX_NUDGE), intArrayOf(FX_CHANCE), intArrayOf(FX_EVERY, FX_EVERY_PASS), intArrayOf(FX_WOBBLE_MODE, FX_WOBBLE_RATE, FX_WOBBLE_DEPTH), intArrayOf(FX_ROBOT_PROFILE, FX_ROBOT_MORPH, FX_ROBOT_MIX), intArrayOf(FX_BAND_PASS, FX_BAND_RESONANCE), intArrayOf(), intArrayOf(FX_CHOIR_COPIES, FX_CHOIR_DETUNE, FX_CHOIR_OFFSET), intArrayOf(FX_BEND_CIRCUIT, FX_BEND_SCOPE, FX_BEND_CHAOS, FX_BEND_CLOCK, FX_BEND_GRIT, FX_BEND_FEEDBACK, FX_BEND_SIZE, FX_BEND_MIX))
+		@JvmField val FX_GROUP_LABELS = arrayOf(arrayOf("Speed"), arrayOf("Key", "Scale", "Strength", "Retune", "Mix"), arrayOf("Cutoff", "Resonance"), arrayOf("Time", "Echoes", "Mix"), arrayOf("Type", "Drive", "Bits", "Rate", "Mix"), arrayOf("Attack", "Decay", "Sustain", "Release"), arrayOf("Mix"), arrayOf("Swing"), arrayOf("Volume"), arrayOf("Start", "End"), arrayOf("Pitch"), arrayOf("Cutoff", "Resonance"), arrayOf("Nudge"), arrayOf("Chance"), arrayOf("Every", "Play on"), arrayOf("Mode", "Rate", "Depth"), arrayOf("Voice", "Morph", "Mix"), arrayOf("Center", "Resonance"), arrayOf(), arrayOf("Copies", "Detune", "Offset"), arrayOf("Circuit", "Scope", "Chaos", "Clock", "Grit", "Feedback", "Size", "Mix"))
 		const val SECRET_TRANS = 0
 		const val SECRET_PRIDE = 1
 		const val SECRET_SWEDEN = 2

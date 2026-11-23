@@ -104,6 +104,7 @@ public final class EffectsTest {
 		powerSwitches();
 		groupResets();
 		effectStack();
+		circuitBend();
 		File file = Files.createTempFile("tape-effects", ".wav").toFile();
 		try (Tape tape = new Tape(file)) {
 			tape.write(0, tone, tone.length);
@@ -240,7 +241,7 @@ public final class EffectsTest {
 		}
 		Sequencer.Effects previous = new Sequencer.Effects();
 		previous.restoreOrder(new int[]{Sequencer.Effects.DISTORTION, Sequencer.Effects.LOW_PASS, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB});
-		check(Arrays.equals(previous.chain, new int[]{Sequencer.Effects.DISTORTION, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB}), "Five-effect projects retain their order when Band-pass is added");
+		check(Arrays.equals(previous.chain, new int[]{Sequencer.Effects.DISTORTION, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.DELAY, Sequencer.Effects.REVERB, Sequencer.Effects.BEND}), "Five-effect projects retain their order when Band-pass is added");
 	}
 
 	private static void distortionTuning() {
@@ -348,7 +349,7 @@ public final class EffectsTest {
 		}
 		Sequencer.Effects migrated = new Sequencer.Effects();
 		migrated.restoreOrder(new int[]{Sequencer.Effects.HIGH_PASS, reverb, distortion, delay});
-		check(Arrays.equals(migrated.chain, new int[]{Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, reverb, distortion, delay}), "Saved Filters order keeps High pass before Low pass");
+		check(Arrays.equals(migrated.chain, new int[]{Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, reverb, distortion, delay, Sequencer.Effects.BEND}), "Saved Filters order keeps High pass before Low pass");
 		Sequencer.Effects legacyOn = new Sequencer.Effects(); legacyOn.lowPass = 900;
 		legacyOn.effectPower = legacyOn.effectPowerSet = 1 << Sequencer.Effects.HIGH_PASS;
 		legacyOn.splitGroups(); legacyOn.normalize();
@@ -686,6 +687,62 @@ public final class EffectsTest {
 		int from = data.length / 5, to = data.length * 4 / 5, crossings = 0;
 		for (int i = from + 1; i < to; i++) if (data[i - 1] <= 0 && data[i] > 0) crossings++;
 		return crossings * Tape.RATE / (double) (to - from);
+	}
+
+	private static void circuitBend() {
+		Sequencer.Effects saved = new Sequencer.Effects();
+		saved.restoreOrder(new int[]{Sequencer.Effects.DELAY, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.REVERB});
+		check(Arrays.equals(saved.chain, new int[]{Sequencer.Effects.DELAY, Sequencer.Effects.HIGH_PASS, Sequencer.Effects.LOW_PASS, Sequencer.Effects.BAND_PASS, Sequencer.Effects.DISTORTION, Sequencer.Effects.REVERB, Sequencer.Effects.BEND}), "Six-effect projects keep their order and gain Bend last");
+
+		Sequencer.Effects controls = new Sequencer.Effects();
+		controls.power(Sequencer.Effects.BEND, true);
+		controls.bendChaos = 0; controls.bendGrit = 0; controls.bendFeedback = 0; controls.bendClock = CircuitBend.NEUTRAL_CLOCK;
+		TrackEffects clean = new TrackEffects();
+		boolean exact = true;
+		for (int frame = 0; frame < Tape.RATE; frame++) {
+			float input = (float) Math.sin(frame * 0.05) * 0.5f;
+			if (clean.process(input, controls, Sequencer.DEFAULT_BPM) != input) exact = false;
+		}
+		check(exact, "Bend with every knob at stock is transparent");
+
+		check(CircuitBend.clockRate(0) == 1 / 16.0 && CircuitBend.clockRate(CircuitBend.NEUTRAL_CLOCK) == 1 && CircuitBend.clockRate(100) == 4, "Bend clock spans x1/16 to x4 with stock in the middle");
+		controls.bendClock = 0; controls.bendChaos = 0; controls.bendGrit = 0;
+		CircuitBend slow = new CircuitBend();
+		for (int frame = 0; frame < Tape.RATE * 2; frame++) checkFinite(slow.process((float) Math.sin(frame * 0.05) * 0.5f, controls));
+		controls.bendClock = CircuitBend.NEUTRAL_CLOCK;
+		controls.bendScope = CircuitBend.DEVICE;
+		check(!controls.bendsTrack() && controls.bendsDevice() && !new TrackEffects().prepareBlock(controls), "Device scope leaves the track chain alone");
+		controls.bendScope = CircuitBend.TRACK;
+
+		for (int circuit = 0; circuit < CircuitBend.CIRCUITS.length; circuit++) {
+			controls.bendCircuit = circuit; controls.bendChaos = 100; controls.bendGrit = 60; controls.bendFeedback = 100; controls.bendClock = 80; controls.bendSize = 40;
+			CircuitBend first = new CircuitBend(), second = new CircuitBend();
+			boolean same = true, changed = false;
+			for (int frame = 0; frame < Tape.RATE * 3; frame++) {
+				float input = (float) Math.sin(frame * 0.03) * 0.8f;
+				float a = first.process(input, controls), b = second.process(input, controls);
+				checkFinite(a);
+				if (Math.abs(a) > 2.5f) check(false, CircuitBend.CIRCUITS[circuit] + " stays bounded");
+				if (a != b) same = false;
+				if (Math.abs(a - input) > 0.05f) changed = true;
+			}
+			check(same, CircuitBend.CIRCUITS[circuit] + " glitches repeat exactly for exports");
+			check(changed, CircuitBend.CIRCUITS[circuit] + " audibly bends the sound");
+			check(first.takeEvents() > 0 && first.takeEvents() == 0, CircuitBend.CIRCUITS[circuit] + " reports glitch events once");
+		}
+
+		controls.bendCircuit = CircuitBend.HOWL; controls.bendChaos = 0; controls.bendFeedback = 100;
+		CircuitBend howl = new CircuitBend();
+		float tail = 0;
+		for (int frame = 0; frame < Tape.RATE * 4; frame++) tail = Math.abs(howl.process(frame < 480 ? 0.8f : 0, controls));
+		check(tail < 0.001f, "Full feedback rings out instead of howling forever");
+
+		Sequencer.Effects copy = controls.copy();
+		check(copy.sameGroup(Sequencer.Effects.BEND, controls), "Bend settings copy");
+		copy.resetGroup(Sequencer.Effects.BEND);
+		check(!copy.powered(Sequencer.Effects.BEND) && copy.bendFeedback == CircuitBend.DEFAULT_FEEDBACK, "Bend reset restores defaults");
+		copy.restoreGroup(Sequencer.Effects.BEND, controls);
+		check(copy.sameGroup(Sequencer.Effects.BEND, controls), "Bend undo restores settings");
 	}
 
 	private static void checkFinite(float value) {

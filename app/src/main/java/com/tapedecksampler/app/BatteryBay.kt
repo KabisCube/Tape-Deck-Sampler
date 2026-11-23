@@ -59,7 +59,8 @@ class BatteryBay(private val settings: SharedPreferences) {
 		save()
 	}
 
-	fun insert(slot: Int, now: Long) { installed[slot] = true; changedAt[slot] = now; leavingBrand[slot] = -1; roll[slot] = randomRoll(); save() }
+	// Keeps the roll the battery had while lying outside; only a battery coming out (kick) tumbles to a new roll.
+	fun insert(slot: Int, now: Long) { installed[slot] = true; changedAt[slot] = now; leavingBrand[slot] = -1; save() }
 
 	fun toggleSwitch(index: Int) { switches = switches xor (1 shl index); save() }
 
