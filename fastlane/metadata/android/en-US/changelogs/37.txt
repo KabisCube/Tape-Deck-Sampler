@@ -1,0 +1,1 @@
+- fixed bug where tapes could be played when they weren't in the deck.
