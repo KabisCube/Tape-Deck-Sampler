@@ -34,6 +34,8 @@ Both `keystore.properties` and `*.jks` are ignored by git. If `keystore.properti
 
 Run **Release Tape Deck Sampler.bat** on a clean `main`. It asks for the new version, runs the tests and opens Notepad for the changelog: write what changed, save and close Notepad. It then bumps `versionCode` and `versionName`, commits, tags `vX.Y.Z` and pushes. The GitHub Actions workflow in `.github/workflows/release.yml` builds the signed APK and publishes it under Releases. Versions starting with `0.` are marked as pre-releases.
 
+To try a build without releasing, run the **Test build** workflow (GitHub > Actions > Test build > Run workflow, or `gh workflow run test-build.yml`). It runs the tests and builds a signed APK from the latest commit on the chosen branch, attached to the run as an artifact for 14 days. Nothing is tagged, bumped or published.
+
 Changelogs live in `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` (max 500 characters) and are used both for the GitHub release and by F-Droid. The store description and screenshots are in the same `fastlane` folder.
 
 The workflow needs these repository secrets (GitHub > Settings > Secrets and variables > Actions):

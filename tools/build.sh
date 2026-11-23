@@ -48,7 +48,8 @@ if [[ -n "$sdk_dir" && ! -d "$sdk_dir" ]]; then
 	printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$properties"
 fi
 
-gradle=(./gradlew --no-daemon --console plain)
+# Through bash: gradlew isn't marked executable in git (it was committed from Windows).
+gradle=(bash ./gradlew --no-daemon --console plain)
 "${gradle[@]}" -q :app:compileReleaseJavaWithJavac
 
 gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
