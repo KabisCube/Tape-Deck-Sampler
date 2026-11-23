@@ -13,6 +13,13 @@
 
 The scripts build with `gradlew` and use a JDK or SDK in the local `.tools/` folder if one is there (it is ignored by git). Otherwise the build script falls back to `JAVA_HOME` and `ANDROID_HOME`. The phone and emulator scripts expect `adb` and the emulator in `.tools/sdk`.
 
+## Linux scripts
+
+- **Release Tape Deck Sampler.sh** is the Linux version of the release `.bat` (it reopens itself in Konsole when double-clicked). It runs `release.sh`, which works like `release.ps1` but opens the changelog in `$VISUAL`, `$EDITOR`, Kate or nano instead of Notepad.
+- **build.sh** is the Linux version of `build.ps1`: `tools/build.sh` builds and tests like **Build Tape Deck Sampler.bat**, and `tools/build.sh --test-only` only runs the tests.
+
+They need JDK 17 (found through `JAVA_HOME`, `/usr/lib/jvm/java-17-*` or a Linux JDK in `.tools/java`) and the Android SDK (`ANDROID_HOME`, `~/Android/Sdk` or a Linux SDK in `.tools/sdk`); Windows copies of the JDK or SDK in `.tools/` are skipped. If `local.properties` points at an SDK path that doesn't exist on this machine (such as the Windows one), the build uses the Linux SDK for that run and puts the original file back afterwards.
+
 ## Release signing
 
 To sign release builds with your own key, create a keystore in `signing/` and copy `signing/keystore.properties.example` to `signing/keystore.properties` with your values:
