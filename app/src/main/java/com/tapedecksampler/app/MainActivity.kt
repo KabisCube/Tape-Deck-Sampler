@@ -1312,7 +1312,7 @@ class MainActivity : Activity(), AudioEngine.Listener {
 	}
 
 	fun transport() {
-		if (noTape) return
+		if (noTape || instrument.tapeOutOfDeck()) return
 		if (busy || mode == Mode.RECORDING || mode == Mode.DEVICE_RECORD || mode == Mode.SYNC_CLAP) return
 		if (sequencer.isPlaying() || sequencer.isSyncWaiting()) {
 			sequencer.stop()
@@ -1327,6 +1327,15 @@ class MainActivity : Activity(), AudioEngine.Listener {
 	}
 
 	fun center() { confirm() }
+
+	/** The tape started lifting out of the deck (Projects carousel, renaming): stop playback, like a real eject. */
+	fun tapeLeftDeck() {
+		if (!::sequencer.isInitialized || noTape) return
+		if (sequencer.isPlaying() || sequencer.isSyncWaiting()) {
+			sequencer.stop()
+			message = "STOPPED / NEXT PLAY STARTS AT 01"
+		}
+	}
 
 	fun wheelMenu() {
 		if (mode == Mode.HOME) confirm() else cancel()

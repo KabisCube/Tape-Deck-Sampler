@@ -609,6 +609,9 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 
 	fun cassetteBusy() = insertStart >= 0 || introName != null
 
+	/** True whenever the tape isn't sitting in the deck: lifted out, on the carousel, or mid load. Nothing can play then. */
+	fun tapeOutOfDeck() = cassetteBusy() || deckOut > 0f
+
 	fun throwCassette(name: String, color: Int) {
 		throwName = name; throwColor = color
 		throwStart = SystemClock.uptimeMillis()
@@ -940,8 +943,11 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		val dt = if (deckResting) 0f else min(100L, now - deckFrame) / DECK_OUT_MILLIS
 		deckFrame = now
 		if (insertStart >= 0) { deckOut = 0f; return }
+		val seated = deckOut == 0f
 		deckOut = if (goal > deckOut) min(goal, deckOut + dt) else max(goal, deckOut - dt)
 		deckResting = deckOut == goal
+		// Like pressing eject on a real deck: the tape starting to lift out stops whatever is playing.
+		if (seated && deckOut > 0f) app.tapeLeftDeck()
 		if (deckOut >= 1f && app.mode == Mode.PROJECT_OPEN && !app.noTape && app.carouselKey() != loadedKey()) {
 			app.ejectToShelf()
 			// The lifted tape is now just a tape on the shelf, already sitting in its slot; the deck is empty and closed.
