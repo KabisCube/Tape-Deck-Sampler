@@ -2,7 +2,7 @@
 # writes the F-Droid changelog, then commits, tags vX.Y.Z and pushes. GitHub Actions builds and uploads the APK.
 param([string]$Version)
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # tools\lib -> project folder
 Set-Location $root
 
 function Stop-Release([string]$reason) {

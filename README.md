@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" alt="Tape Deck Sampler front" width="45%">
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" alt="Tape Deck Sampler back" width="45%">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" alt="Tape Deck Sampler front" width="34%">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" alt="Tape Deck Sampler back" width="34%">
 </p>
 
 # Tape Deck Sampler
@@ -75,7 +75,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 You can also open the project in Android Studio and press Run.
 
-Windows helper scripts, release signing and publishing are described in [tools/README.md](tools/README.md).
+Helper scripts for Windows and Linux (build and test, install on a phone, screenshots, releasing), release signing and publishing are in [tools/](tools/) and described in [tools/README.md](tools/README.md).
 
 
 ## License

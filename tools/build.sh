@@ -7,46 +7,14 @@ test_only=false
 [[ "${1:-}" == "--test-only" ]] && test_only=true
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$root/tools/lib/common.sh"     # JDK 17, Android SDK, a local.properties that works here, terminal window
+tds_open_terminal "$@"
 cd "$root"
-
-# --- JDK 17 (Gradle 8.9 can't run on much newer JDKs) ---
-# .tools/ may hold the Windows JDK and SDK (from build.ps1); only use them if they're Linux builds that actually run.
-local_java=""
-for candidate in "$root"/.tools/java/*/; do
-	if [[ -x "${candidate}bin/java" ]] && "${candidate}bin/java" -version > /dev/null 2>&1; then local_java="${candidate%/}"; break; fi
-done
-if [[ -n "$local_java" ]]; then
-	export JAVA_HOME="$local_java"
-elif [[ -z "${JAVA_HOME:-}" || ! "$("${JAVA_HOME}/bin/java" -version 2>&1)" =~ \"17 ]]; then
-	for candidate in /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17*; do
-		if [[ -x "$candidate/bin/javac" ]]; then export JAVA_HOME="$candidate"; break; fi
-	done
-fi
-if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/javac" ]]; then
-	echo "Install JDK 17 (e.g. 'sudo pacman -S jdk17-openjdk') or set JAVA_HOME." >&2
-	exit 1
-fi
-
-# --- Android SDK ---
-if [[ -x "$root/.tools/sdk/platform-tools/adb" ]]; then export ANDROID_HOME="$root/.tools/sdk"
-elif [[ -z "${ANDROID_HOME:-}" && -d "$HOME/Android/Sdk" ]]; then export ANDROID_HOME="$HOME/Android/Sdk"
-fi
-
-# local.properties may hold the Windows SDK path, which breaks Gradle here. If its sdk.dir doesn't exist on this
-# machine, point it at the Linux SDK for this build only, and always put the original back when the script ends.
-properties="$root/local.properties"
-backup=""
-restore_properties() { if [[ -n "$backup" ]]; then mv -f "$backup" "$properties"; backup=""; fi; }
-trap restore_properties EXIT
+trap 'tds_restore_properties; tds_pause' EXIT
 trap 'exit 130' INT TERM
-sdk_dir=$(sed -n 's/^sdk\.dir=//p' "$properties" 2>/dev/null | tr -d '\r' || true)
-if [[ -n "$sdk_dir" && ! -d "$sdk_dir" ]]; then
-	if [[ -z "${ANDROID_HOME:-}" ]]; then echo "Android SDK not found. Set ANDROID_HOME." >&2; exit 1; fi
-	mkdir -p "$root/.tools"
-	backup="$(mktemp "$root/.tools/local.properties.XXXXXX")"
-	cp -p "$properties" "$backup"
-	printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$properties"
-fi
+tds_setup_java
+tds_setup_sdk
+tds_use_local_sdk
 
 # Through bash: gradlew isn't marked executable in git (it was committed from Windows).
 gradle=(bash ./gradlew --no-daemon --console plain)

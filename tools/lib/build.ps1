@@ -1,6 +1,6 @@
 param([switch]$TestOnly)
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # tools\lib -> project folder
 Set-Location $root
 $localJava = Get-ChildItem -LiteralPath "$root\.tools\java" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($localJava) { $env:JAVA_HOME = $localJava.FullName }

@@ -1,0 +1,10 @@
+// Used by render-previews: builds the screenshot helper (PreviewShots) against the release build, so the app and the
+// helper are signed with the same key as the app already on the phone and install as a normal update.
+allprojects {
+    pluginManager.withPlugin('com.android.application') {
+        android.testBuildType = 'release'
+        androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+            variant.androidTest?.instrumentationRunner?.set('com.tapedecksampler.app.PreviewShots')
+        }
+    }
+}

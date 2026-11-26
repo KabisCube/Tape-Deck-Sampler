@@ -5,6 +5,9 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$root/tools/lib/common.sh"     # opens in a terminal when double-clicked, and waits for Enter at the end there
+tds_open_terminal "$@"
+trap tds_pause EXIT
 cd "$root"
 
 stop_release() {
@@ -53,7 +56,7 @@ existing=$(git_or_stop tag --list "$tag")
 [[ -z "$existing" ]] || stop_release "Tag $tag already exists."
 
 echo "Running tests..."
-"$root/tools/build.sh" --test-only || stop_release "Tests failed. Nothing was released."
+TDS_WINDOW= "$root/tools/build.sh" --test-only || stop_release   # (TDS_WINDOW= : no "press Enter" halfway through) "Tests failed. Nothing was released."
 
 new_code=$((current_code + 1))
 changelog_dir="$root/fastlane/metadata/android/en-US/changelogs"

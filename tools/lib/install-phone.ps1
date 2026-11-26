@@ -1,4 +1,4 @@
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # tools\lib -> project folder
 Set-Location $root
 $adb = "$root\.tools\sdk\platform-tools\adb.exe"
 $apk = "$root\app\build\outputs\apk\release\app-release.apk"
