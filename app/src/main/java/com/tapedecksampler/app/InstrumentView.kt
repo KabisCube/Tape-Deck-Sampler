@@ -222,11 +222,16 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		val lidT = now - bay.lidChangedAt
 		val lidMoving = lidT < LID_MILLIS
 		val fitHeight = UI_HEIGHT
-		val contentWidth = (width - paddingLeft - paddingRight).toFloat()
-		val contentHeight = (height - paddingTop - paddingBottom).toFloat()
+		// Every edge keeps at least a small margin, so on wide screens (tablets, foldables, split screen) the deck never
+		// touches the top and bottom; where the system bars already leave more room, that room is used as before.
+		val margin = min(width, height) * EDGE_MARGIN
+		val edgeLeft = max(paddingLeft.toFloat(), margin); val edgeRight = max(paddingRight.toFloat(), margin)
+		val edgeTop = max(paddingTop.toFloat(), margin); val edgeBottom = max(paddingBottom.toFloat(), margin)
+		val contentWidth = width - edgeLeft - edgeRight
+		val contentHeight = height - edgeTop - edgeBottom
 		scale = min(contentWidth / UI_WIDTH, contentHeight / fitHeight)
-		offsetX = paddingLeft + (contentWidth - UI_WIDTH * scale) / 2
-		offsetY = paddingTop + (contentHeight - fitHeight * scale) / 2
+		offsetX = edgeLeft + (contentWidth - UI_WIDTH * scale) / 2
+		offsetY = edgeTop + (contentHeight - fitHeight * scale) / 2
 		c.save()
 		c.translate(offsetX, offsetY)
 		c.scale(scale, scale)
@@ -3664,6 +3669,8 @@ class InstrumentView(private val app: MainActivity) : View(app) {
 		private val SCREW_ANGLES = floatArrayOf(-14f, 11f, 24f, -26f)
 		private val SLICE_WAVEFORM = floatArrayOf(3f, 7f, 10f, 5f, 9f, 6f, 2f)
 		const val UI_WIDTH = 400f
+		/** Smallest gap between the deck and any screen edge, as a share of the screen's shorter side. */
+		private const val EDGE_MARGIN = 0.035f
 		const val UI_CENTER_X = UI_WIDTH / 2
 		const val WHEEL_X = UI_CENTER_X
 		const val WHEEL_Y = 687f
